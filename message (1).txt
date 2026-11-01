@@ -12,7 +12,19 @@
 --   6. ⚙️ 24h AFK Optimizer, Anti-AFK, 3D Rendering Toggle, Fast Teleports
 -- =====================================================================
 
+if not game:IsLoaded() then
+    pcall(function() game.Loaded:Wait() end)
+end
+
 local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+while not LocalPlayer do
+    task.wait(0.2)
+    LocalPlayer = Players.LocalPlayer
+end
+
+local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts")
+local Client = PlayerScripts:WaitForChild("Client")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -20,10 +32,6 @@ local CoreGui = game:GetService("CoreGui")
 local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
 local RunService = game:GetService("RunService")
-
-local LocalPlayer = Players.LocalPlayer
-local PlayerScripts = LocalPlayer:WaitForChild("PlayerScripts")
-local Client = PlayerScripts:WaitForChild("Client")
 
 -- Game Controllers & Modules
 local Remotes = require(ReplicatedStorage.Shared.Net.Remotes)
@@ -45,6 +53,47 @@ local RemoteSetLoadout = Remotes.GetFunction(Remotes.SetLoadout)
 local RemoteRiftAction = Remotes.GetFunction(Remotes.RiftAction)
 local RemoteBattleAction = Remotes.GetFunction(Remotes.BattleAction)
 local RemoteTeleport = Remotes.GetFunction(Remotes.Teleport)
+
+-- =====================================================================
+-- SAFE PLATFORM ADAPTERS (Crash-Proof Mobile & PC Support)
+-- =====================================================================
+
+local function GetSafeTime()
+    local ok, t = pcall(function() return GetSafeTime() end)
+    if ok and typeof(t) == "number" and t > 0 then return t end
+    return os.time()
+end
+
+local function GetSafeState()
+    local ok, s = pcall(function() return StateController:Get() end)
+    if ok and typeof(s) == "table" then return s end
+    return {}
+end
+
+local function SafeRiftStatus(nowTime)
+    nowTime = nowTime or GetSafeTime()
+    local ok, st = pcall(function() return RiftConfig.Status(nowTime) end)
+    if ok and typeof(st) == "table" then return st end
+    return { joinable = false, open = false, nextOpenAt = nowTime + 600, joinEndsAt = nowTime + 300 }
+end
+
+local function SafeClock(sec)
+    if not sec or sec <= 0 then return "0:00" end
+    local ok, res = pcall(function() return RiftConfig.Clock(sec) end)
+    if ok and typeof(res) == "string" then return res end
+    local m = math.floor(sec / 60)
+    local s = math.floor(sec % 60)
+    return string.format("%d:%02d", m, s)
+end
+
+local function SafeStoryCooldown(cooldowns, stageId, nowTime)
+    nowTime = nowTime or GetSafeTime()
+    local ok, cd = pcall(function()
+        return StoryRules.CooldownLeft(cooldowns or {}, stageId, nowTime)
+    end)
+    if ok and typeof(cd) == "number" then return cd end
+    return 0
+end
 
 -- Global State & Settings
 local Settings = {
@@ -255,45 +304,9 @@ end
 -- =====================================================================
 -- Configuration System (Save / Load to disk via JSON)
 -- =====================================================================
-local CONFIG_FILE = "acb_autofarm_v4.json"
-
-local function SanitizeSettings()
-    Settings.MultiSlot1Team = tonumber(tostring(Settings.MultiSlot1Team):match("%d+")) or 2
-    Settings.MultiSlot2StoryTeam = tonumber(tostring(Settings.MultiSlot2StoryTeam):match("%d+")) or 1
-    Settings.MultiSlot2RiftTeam = tonumber(tostring(Settings.MultiSlot2RiftTeam):match("%d+")) or 3
-    Settings.StoryTeam = tonumber(tostring(Settings.StoryTeam):match("%d+")) or 1
-    Settings.TowerTeam = tonumber(tostring(Settings.TowerTeam):match("%d+")) or 2
-    Settings.RiftTeam = tonumber(tostring(Settings.RiftTeam):match("%d+")) or 3
-    Settings.EndgameBossTeam = tonumber(tostring(Settings.EndgameBossTeam):match("%d+")) or 1
-    Settings.EndgameTowerTeam = tonumber(tostring(Settings.EndgameTowerTeam):match("%d+")) or 2
-    Settings.MultiSlot2RiftBoss = tonumber(tostring(Settings.MultiSlot2RiftBoss):match("%d+")) or 1
-    Settings.SelectedRiftBoss = tonumber(tostring(Settings.SelectedRiftBoss):match("%d+")) or 1
-    if typeof(Settings.MultiSlot1Tower) ~= "string" or Settings.MultiSlot1Tower == "" then
-        Settings.MultiSlot1Tower = "Hardcore"
-    end
-    if typeof(Settings.SelectedTower) ~= "string" or Settings.SelectedTower == "" then
-        Settings.SelectedTower = "Hardcore"
-    end
-    -- Prevent mutually exclusive farm modes from being active simultaneously
-    if Settings.MultiBattleSystem then
-        Settings.StoryFarmEnabled = false
-        Settings.TowerFarmEnabled = false
-        Settings.RiftFarmEnabled = false
-        Settings.EndgameFarmEnabled = false
-    elseif Settings.StoryFarmEnabled then
-        Settings.TowerFarmEnabled = false
-        Settings.RiftFarmEnabled = false
-        Settings.EndgameFarmEnabled = false
-    elseif Settings.TowerFarmEnabled then
-        Settings.RiftFarmEnabled = false
-        Settings.EndgameFarmEnabled = false
-    elseif Settings.RiftFarmEnabled then
-        Settings.EndgameFarmEnabled = false
-    end
-end
+local CONFIG_FILE = "acb_autofarm_config.json"
 
 local function SaveConfig()
-    SanitizeSettings()
     if typeof(writefile) == "function" then
         pcall(function()
             writefile(CONFIG_FILE, HttpService:JSONEncode(Settings))
@@ -326,11 +339,16 @@ local function LoadConfig()
             end
         end
     end
-    Settings.CpuGpuSaver = false
-    SanitizeSettings()
 end
 
 LoadConfig()
+
+-- Apply loaded performance configs
+if Settings.CpuGpuSaver then
+    pcall(function()
+        RunService:Set3dRenderingEnabled(false)
+    end)
+end
 if Settings.FpsCap and typeof(setfpscap) == "function" then
     pcall(function()
         if Settings.FpsCap == "15 FPS" then
@@ -349,102 +367,38 @@ end
 -- Helper Functions & Multi-Battle Detection
 -- =====================================================================
 
-local function GetSafeTime()
-    local ok, t = pcall(function() return workspace:GetServerTimeNow() end)
-    if ok and typeof(t) == "number" and t > 0 then
-        return t
-    end
-    return os.time()
-end
-
-local function GetSafeState()
-    local ok, s = pcall(function() return StateController:Get() end)
-    if ok and typeof(s) == "table" then
-        return s
-    end
-    return {}
-end
-
-local function SafeCooldownLeft(cooldowns, stageId, now)
-    now = now or GetSafeTime()
-    local ok, cd = pcall(function()
-        return StoryRules.CooldownLeft(cooldowns or {}, stageId, now)
-    end)
-    if ok and typeof(cd) == "number" then
-        return cd
-    end
-    return 0
-end
-
-local function SafeRiftStatus(now)
-    now = now or GetSafeTime()
-    local ok, st = pcall(function()
-        return RiftConfig.Status(now)
-    end)
-    if ok and typeof(st) == "table" then
-        return st
-    end
-    return { joinable = false, open = false, nextOpenAt = now + 600, joinEndsAt = now }
-end
-
-local function SafeClock(sec)
-    local n = tonumber(sec) or 0
-    if n <= 0 then return "0:00" end
-    local ok, str = pcall(function()
-        return RiftConfig.Clock(n)
-    end)
-    if ok and typeof(str) == "string" then
-        return str
-    end
-    local s = math.max(0, math.ceil(n))
-    return string.format("%d:%02d", math.floor(s / 60), s % 60)
-end
-
-local ActionLock = false
-local ActionLockAt = 0
-local function AcquireActionLock()
-    while ActionLock and (os.clock() - ActionLockAt < 3.5) do
-        task.wait(0.15)
-    end
-    ActionLock = true
-    ActionLockAt = os.clock()
-end
-
-local function ReleaseActionLock()
-    ActionLock = false
-end
-
+local LastTeamSwitch = 0
 local function SwitchTeam(targetTeam)
-    local teamNum = tonumber(tostring(targetTeam):match("%d+")) or 1
     local state = GetSafeState()
     local current = state and state.ActiveLoadout
-    if current ~= teamNum then
-        SetStatus(string.format("Switching to Team %d...", teamNum))
-        pcall(function()
-            StateController:SetLoadout(teamNum)
-        end)
-        task.wait(0.35)
+    if current ~= targetTeam then
+        local now = os.clock()
+        if now - LastTeamSwitch > 2.0 then
+            LastTeamSwitch = now
+            SetStatus(string.format("Switching to Team %d...", targetTeam))
+            pcall(function()
+                StateController:SetLoadout(targetTeam)
+            end)
+            task.wait(0.4)
+        end
     end
 end
 
-local LastAutoBattleAt = 0
+local LastAutoBattleCheck = 0
 local function EnsureAutoBattle()
-    if Settings.AutoBattle then
-        local now = os.clock()
-        if now - LastAutoBattleAt < 2.0 then return end
-        LastAutoBattleAt = now
-        pcall(function()
-            if SettingsController:Get("AutoBattle") ~= true then
-                SettingsController:Set("AutoBattle", true)
-            end
-            if BattleController.SetAuto then
-                local isAuto = BattleController.AutoOn and BattleController.AutoOn()
-                if not isAuto then
-                    BattleController.SetAuto(true)
-                end
-            end
-        end)
-    end
+    if not Settings.AutoBattle then return end
+    local now = os.clock()
+    if now - LastAutoBattleCheck < 3.0 then return end
+    LastAutoBattleCheck = now
+
+    pcall(function()
+        if SettingsController:Get("AutoBattle") ~= true then
+            SettingsController:Set("AutoBattle", true)
+        end
+        if BattleController.SetAuto and not BattleController.AutoOn() then
+            BattleController.SetAuto(true)
+        end
+    end)
 end
 
 local function EquipBestCards()
@@ -455,10 +409,8 @@ end
 
 -- MultiBattle Background Inspection
 local function GetBgBattle()
-    local okAttr, attr = pcall(function()
-        return LocalPlayer:GetAttribute(MultiBattle.ATTRIBUTE)
-    end)
-    if okAttr and typeof(attr) == "string" and attr ~= "" then
+    local attr = LocalPlayer:GetAttribute(MultiBattle.ATTRIBUTE)
+    if typeof(attr) == "string" and attr ~= "" then
         local ok, data = pcall(HttpService.JSONDecode, HttpService, attr)
         if ok and typeof(data) == "table" and data.side ~= "over" then
             return data
@@ -468,35 +420,23 @@ local function GetBgBattle()
 end
 
 local function IsTowerBattleActive()
-    local okFg, fg = pcall(function()
-        return BattleController.IsActive() and BattleController.IsTower()
-    end)
-    if okFg and fg then
+    if BattleController.IsActive() and BattleController.IsTower() then
         return true
     end
     local bg = GetBgBattle()
-    if bg then
-        local okBg, isT = pcall(MultiBattle.IsTower, bg.mode)
-        if okBg and isT then
-            return true
-        end
+    if bg and MultiBattle.IsTower(bg.mode) then
+        return true
     end
     return false
 end
 
 local function IsRotatorBattleActive()
-    local okFg, fg = pcall(function()
-        return BattleController.IsActive() and not BattleController.IsTower()
-    end)
-    if okFg and fg then
+    if BattleController.IsActive() and not BattleController.IsTower() then
         return true
     end
     local bg = GetBgBattle()
-    if bg then
-        local okBg, isT = pcall(MultiBattle.IsTower, bg.mode)
-        if okBg and not isT then
-            return true
-        end
+    if bg and not MultiBattle.IsTower(bg.mode) then
+        return true
     end
     return false
 end
@@ -517,7 +457,7 @@ local function GetNextStoryTarget(targetWorld, targetDiff)
     -- 1. HIGHEST PRIORITY: Secret Boss (Ruffy 4 in Toy Kingdom)
     if Settings.StorySecretBoss and worldId == "toy_kingdom" then
         local secId = "toy_kingdom_secret"
-        local secCd = SafeCooldownLeft(state.StoryCooldowns, secId, now)
+        local secCd = SafeStoryCooldown(state.StoryCooldowns, secId, now)
         if secCd <= 0 then
             return secId, "Secret", "Secret Boss: Ruffy 4"
         end
@@ -549,7 +489,7 @@ local function GetNextStoryTarget(targetWorld, targetDiff)
     for offset = 0, #enabledStages - 1 do
         local checkIdx = ((StoryCycleCursor + offset - 1) % #enabledStages) + 1
         local candidate = enabledStages[checkIdx]
-        local cd = SafeCooldownLeft(state.StoryCooldowns, candidate, now)
+        local cd = SafeStoryCooldown(state.StoryCooldowns, candidate, now)
         if cd <= 0 then
             StoryCycleCursor = (checkIdx % #enabledStages) + 1
             local friendlyName = (worldData.StageNames and worldData.StageNames[candidate]) or candidate
@@ -583,52 +523,51 @@ local CustomPipelineIndex = 1
 task.spawn(function()
     while true do
         task.wait(0.8)
-        if Settings.MultiBattleSystem and Settings.MultiSlot1Enabled then
-            pcall(function()
-                if not IsTowerBattleActive() then
-                    AcquireActionLock()
-                    local okInner, errInner = pcall(function()
-                        if not IsTowerBattleActive() then
-                            SwitchTeam(Settings.MultiSlot1Team)
-                            local towerName = Settings.MultiSlot1Tower or "Hardcore"
-                            SetStatus(string.format("Multi [Slot 1]: Starting/Resuming %s Tower...", towerName))
+        pcall(function()
+            if Settings.MultiBattleSystem and Settings.MultiSlot1Enabled then
+            if not IsTowerBattleActive() then
+                SwitchTeam(Settings.MultiSlot1Team)
+                local towerName = Settings.MultiSlot1Tower
+                SetStatus(string.format("Multi [Slot 1]: Checking %s Tower...", towerName))
 
-                            local stateRes = RemoteTowerAction:InvokeServer("State")
-                            if stateRes and stateRes.ok and stateRes.state then
-                                local towerState = stateRes.state.towers and stateRes.state.towers[towerName] or {}
-                                if towerState.run then
-                                    SetStatus(string.format("Multi [Slot 1]: Resuming %s Tower...", towerName))
-                                    RemoteTowerAction:InvokeServer("Resume", towerName)
-                                    EnsureAutoBattle()
-                                elseif Settings.MultiSlot1Restart then
-                                    SetStatus(string.format("Multi [Slot 1]: Starting %s Tower...", towerName))
-                                    RemoteTowerAction:InvokeServer("Start", towerName)
-                                    EnsureAutoBattle()
-                                end
-                            end
+                local stateRes = RemoteTowerAction:InvokeServer("State")
+                if stateRes and stateRes.ok and stateRes.state then
+                    local towerState = stateRes.state.towers and stateRes.state.towers[towerName] or {}
+                    local run = towerState.run
+                    
+                    if run then
+                        SetStatus(string.format("Multi [Slot 1]: Resuming %s Tower...", towerName))
+                        RemoteTowerAction:InvokeServer("Resume", towerName)
+                        EnsureAutoBattle()
+                        task.wait(2)
+                    elseif Settings.MultiSlot1Restart then
+                        SetStatus(string.format("Multi [Slot 1]: Starting %s Tower...", towerName))
+                        local startRes = RemoteTowerAction:InvokeServer("Start", towerName)
+                        if startRes and startRes.ok then
+                            EnsureAutoBattle()
+                            task.wait(2)
+                        else
+                            task.wait(2.5)
                         end
-                    end)
-                    ReleaseActionLock()
-                    if not okInner then warn("[Slot 1 Error]:", errInner) end
-                    task.wait(1.8)
+                    end
                 else
-                    EnsureAutoBattle()
+                    task.wait(2)
                 end
-            end)
+            else
+                EnsureAutoBattle()
+            end
         end
+        end)
     end
 end)
 
 -- SLOT 2: Smart Priority Rotator Loop (Story Mobs/Secret Boss <-> Rifts)
 task.spawn(function()
     while true do
-        task.wait(1.0)
-        if Settings.MultiBattleSystem and Settings.MultiSlot2Enabled then
-            pcall(function()
+        task.wait(0.8)
+        pcall(function()
+            if Settings.MultiBattleSystem and Settings.MultiSlot2Enabled then
             if not IsRotatorBattleActive() then
-                AcquireActionLock()
-                pcall(function()
-                if IsRotatorBattleActive() then return end
                 local now = GetSafeTime()
                 local riftStatus = SafeRiftStatus(now)
                 local riftInside = LocalPlayer:GetAttribute("RiftInside") == true
@@ -641,7 +580,7 @@ task.spawn(function()
                 -- =================================================================
                 if Settings.MultiSlot2StoryMode == "Custom Pipeline" then
                     -- 1. TOP PRIORITY: Secret Boss Ruffy 4 (toy_kingdom_secret)
-                    local ruffyCd = SafeCooldownLeft(state.StoryCooldowns, "toy_kingdom_secret", now)
+                    local ruffyCd = SafeStoryCooldown(state.StoryCooldowns, "toy_kingdom_secret", now)
                     if ruffyCd <= 0 and Settings.StorySecretBoss then
                         SwitchTeam(Settings.StoryTeam)
                         SetStatus("Multi [Slot 2]: 👑 Secret Boss Ruffy 4 [Secret]!")
@@ -706,7 +645,7 @@ task.spawn(function()
                         else
                             -- Currently at Step CustomPipelineIndex (1..5)
                             local curStep = CustomPipelineStages[CustomPipelineIndex]
-                            local cd = SafeCooldownLeft(state.StoryCooldowns, curStep.Id, now)
+                            local cd = SafeStoryCooldown(state.StoryCooldowns, curStep.Id, now)
 
                             if cd > 0 then
                                 -- Boss on cooldown: if Rift is available, do Rift while waiting!
@@ -769,7 +708,7 @@ task.spawn(function()
                     -- MODE B: STANDARD FLEXIBLE ROTATOR
                     -- =================================================================
                     local targetStage, targetDiff, friendlyName = GetNextStoryTarget(Settings.SelectedWorld, Settings.SelectedDifficulty)
-                    local stageCd = SafeCooldownLeft(state.StoryCooldowns, targetStage, now)
+                    local stageCd = SafeStoryCooldown(state.StoryCooldowns, targetStage, now)
 
                     local maxQuota = math.huge
                     if Settings.MultiSlot2StoryMode == "Quota 5 Battles" then maxQuota = 5
@@ -849,13 +788,11 @@ task.spawn(function()
                         end
                     end
                 end
-                end)
-                ReleaseActionLock()
             else
                 EnsureAutoBattle()
             end
-            end)
         end
+        end)
     end
 end)
 
@@ -879,7 +816,7 @@ task.spawn(function()
                 local targetStage, targetDiff, friendlyName = GetNextStoryTarget(Settings.SelectedWorld, Settings.SelectedDifficulty)
                 local state = GetSafeState()
                 local now = GetSafeTime()
-                local cooldown = SafeCooldownLeft(state.StoryCooldowns, targetStage, now)
+                local cooldown = SafeStoryCooldown(state.StoryCooldowns, targetStage, now)
                 
                 if cooldown > 0 and not targetStage:match("_secret$") then
                     SetStatus(string.format("Story: CD %ds (%s)", math.ceil(cooldown), friendlyName))
@@ -956,7 +893,7 @@ task.spawn(function()
                     end
                 else
                     local waitSec = math.max(0, status.nextOpenAt - now)
-                    SetStatus(string.format("Rifts: Closed (Opens in %s)", SafeClock(waitSec)))
+                    SetStatus(string.format("Rifts: Closed (Opens in %s)", RiftConfig.Clock(waitSec)))
                     task.wait(math.min(waitSec, 5))
                 end
             else
@@ -1015,7 +952,7 @@ task.spawn(function()
             local readyBoss = nil
             local minCooldown = 999999
             for _, bossId in ipairs(activeTargets) do
-                local cd = SafeCooldownLeft(state.StoryCooldowns, bossId, now)
+                local cd = SafeStoryCooldown(state.StoryCooldowns, bossId, now)
                 if cd <= 0 then
                     readyBoss = bossId
                     break
@@ -1089,7 +1026,15 @@ task.spawn(function()
     end
 end)
 
--- Safe Anti-AFK (Removed collectgarbage("collect") to prevent Delta mobile crash)
+-- Periodic Memory Cleanup & Anti-AFK
+task.spawn(function()
+    while true do
+        task.wait(300)
+        if Settings.AutoMemoryClean then
+            pcall(function() collectgarbage("collect") end)
+        end
+    end
+end)
 
 LocalPlayer.Idled:Connect(function()
     if Settings.AntiAfk then
@@ -1143,26 +1088,10 @@ local function GetSafeGuiParent()
     return LocalPlayer:WaitForChild("PlayerGui")
 end
 
-pcall(function()
-    if typeof(gethui) == "function" then
-        local h = gethui()
-        if h and h:FindFirstChild("ACB_AutoFarm_GUI") then h:FindFirstChild("ACB_AutoFarm_GUI"):Destroy() end
-    end
-end)
-pcall(function()
-    local core = game:GetService("CoreGui")
-    if core then
-        if core:FindFirstChild("ACB_AutoFarm_GUI") then core:FindFirstChild("ACB_AutoFarm_GUI"):Destroy() end
-        local rg = core:FindFirstChild("RobloxGui")
-        if rg and rg:FindFirstChild("ACB_AutoFarm_GUI") then rg:FindFirstChild("ACB_AutoFarm_GUI"):Destroy() end
-    end
-end)
-pcall(function()
-    local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if pg and pg:FindFirstChild("ACB_AutoFarm_GUI") then pg:FindFirstChild("ACB_AutoFarm_GUI"):Destroy() end
-end)
-
 local targetParent = GetSafeGuiParent()
+if targetParent:FindFirstChild("ACB_AutoFarm_GUI") then
+    pcall(function() targetParent:FindFirstChild("ACB_AutoFarm_GUI"):Destroy() end)
+end
 ScreenGui.Parent = targetParent
 
 -- Main Window (460 x 530)
@@ -1235,7 +1164,7 @@ TopBarCorner.CornerRadius = UDim.new(0, 10)
 TopBarCorner.Parent = TopBar
 
 local Title = Instance.new("TextLabel")
-Title.Text = "⚡ ACB Auto Farm [Multi-Battle v4.0]"
+Title.Text = "⚡ ACB Auto Farm [Multi-Battle Edition]"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 13
 Title.TextColor3 = Color3.fromRGB(255, 215, 80)
@@ -1410,20 +1339,13 @@ local function CreateToggle(parent, title, default, callback)
     end
     updateView()
 
-    local toggleApi = {
-        SetState = function(newVal)
-            state = (newVal == true)
-            updateView()
-        end
-    }
-
     btn.MouseButton1Click:Connect(function()
         state = not state
         updateView()
         callback(state)
         SaveConfig()
     end)
-    return frame, toggleApi
+    return frame
 end
 
 local function CreateDropdown(parent, title, options, default, callback)
@@ -1487,24 +1409,18 @@ end
 -- 1. TAB: ⚡ MULTI-BATTLE DUAL SYSTEM PAGE
 -- =====================================================================
 
-local MultiMasterToggleApi, StoryMasterToggleApi, TowerMasterToggleApi, RiftMasterToggleApi
-
-local _, _multiApi = CreateToggle(MultiPage, "⚡ ENABLE MULTIBATTLE DUAL SYSTEM", Settings.MultiBattleSystem, function(val)
+CreateToggle(MultiPage, "⚡ ENABLE MULTIBATTLE DUAL SYSTEM", Settings.MultiBattleSystem, function(val)
     Settings.MultiBattleSystem = val
     if val then
         Settings.StoryFarmEnabled = false
         Settings.TowerFarmEnabled = false
         Settings.EndgameFarmEnabled = false
         Settings.RiftFarmEnabled = false
-        if StoryMasterToggleApi then StoryMasterToggleApi.SetState(false) end
-        if TowerMasterToggleApi then TowerMasterToggleApi.SetState(false) end
-        if RiftMasterToggleApi then RiftMasterToggleApi.SetState(false) end
         SetStatus("Multi-Battle Dual Engine Activated! ⚡")
     else
         SetStatus("Multi-Battle Deactivated")
     end
 end)
-MultiMasterToggleApi = _multiApi
 
 -- Live Multi-Battle Monitor
 local DualMonitor = Instance.new("Frame")
@@ -1531,7 +1447,7 @@ DmTitle.BackgroundTransparency = 1
 DmTitle.Parent = DualMonitor
 
 local DmSlot1 = Instance.new("TextLabel")
-DmSlot1.Text = string.format("Slot 1 [Tower]: %s (Ready ⏳) [Team %d]", tostring(Settings.MultiSlot1Tower or "Hardcore"), tonumber(Settings.MultiSlot1Team) or 2)
+DmSlot1.Text = "Slot 1 [Tower]: Checking..."
 DmSlot1.Font = Enum.Font.GothamMedium
 DmSlot1.TextSize = 11
 DmSlot1.TextColor3 = Color3.fromRGB(120, 215, 255)
@@ -1542,7 +1458,7 @@ DmSlot1.BackgroundTransparency = 1
 DmSlot1.Parent = DualMonitor
 
 local DmSlot2 = Instance.new("TextLabel")
-DmSlot2.Text = "Slot 2 [Pipeline]: Step 1/5 (Toy Kingdom 1) (Ready ⏳)"
+DmSlot2.Text = "Slot 2 [Rotator]: Checking..."
 DmSlot2.Font = Enum.Font.GothamMedium
 DmSlot2.TextSize = 11
 DmSlot2.TextColor3 = Color3.fromRGB(130, 230, 160)
@@ -1553,7 +1469,7 @@ DmSlot2.BackgroundTransparency = 1
 DmSlot2.Parent = DualMonitor
 
 local DmRift = Instance.new("TextLabel")
-DmRift.Text = "Rift Portal: Ready (Monitoring Schedule) ⏳"
+DmRift.Text = "Rift Portal: Checking..."
 DmRift.Font = Enum.Font.GothamMedium
 DmRift.TextSize = 11
 DmRift.TextColor3 = Color3.fromRGB(70, 225, 185)
@@ -1564,7 +1480,7 @@ DmRift.BackgroundTransparency = 1
 DmRift.Parent = DualMonitor
 
 local DmSecret = Instance.new("TextLabel")
-DmSecret.Text = "Secret Boss (Ruffy 4): Ready to Check 🟢"
+DmSecret.Text = "Secret Boss: Checking..."
 DmSecret.Font = Enum.Font.GothamMedium
 DmSecret.TextSize = 11
 DmSecret.TextColor3 = Color3.fromRGB(255, 150, 180)
@@ -1574,46 +1490,41 @@ DmSecret.TextXAlignment = Enum.TextXAlignment.Left
 DmSecret.BackgroundTransparency = 1
 DmSecret.Parent = DualMonitor
 
-local function RefreshDualMonitor()
-    local now = GetSafeTime()
-    local s = GetSafeState()
-
+local function UpdateDualMonitorUI()
     pcall(function()
         local towerAct = IsTowerBattleActive()
-        local tTeam = tonumber(tostring(Settings.MultiSlot1Team):match("%d+")) or 2
-        DmSlot1.Text = string.format("Slot 1 [Tower]: %s (%s) [Team %d]",
-            tostring(Settings.MultiSlot1Tower or "Hardcore"),
-            towerAct and "IN BATTLE 🟢" or "Searching/Ready ⏳",
-            tTeam)
-    end)
-
-    pcall(function()
         local rotAct = IsRotatorBattleActive()
+        local now = GetSafeTime()
+        local s = GetSafeState()
+        local status = SafeRiftStatus(now)
+
+        DmSlot1.Text = string.format("Slot 1 [Tower]: %s (%s) [Team %d]", 
+            Settings.MultiSlot1Tower, 
+            towerAct and "IN BATTLE 🟢" or "Searching/Ready ⏳", 
+            Settings.MultiSlot1Team)
+
         if Settings.MultiSlot2StoryMode == "Custom Pipeline" then
-            local curStage = CustomPipelineStages[CustomPipelineIndex]
-            local stepTxt = curStage and string.format("Step %d/5 (%s)", CustomPipelineIndex, curStage.Name) or "Rifts Mode"
+            local curStageName = (CustomPipelineStages[CustomPipelineIndex] and CustomPipelineStages[CustomPipelineIndex].Name) or "Rifts Mode"
+            local stepTxt = CustomPipelineIndex <= #CustomPipelineStages and string.format("Step %d/5 (%s)", CustomPipelineIndex, curStageName) or "Rifts Mode"
             DmSlot2.Text = string.format("Slot 2 [Pipeline]: %s (%s)", stepTxt, rotAct and "IN BATTLE 🟢" or "Ready ⏳")
         else
-            DmSlot2.Text = string.format("Slot 2 [Rotator]: %s (%s) [Done: %d]",
-                tostring(Settings.MultiSlot2StoryMode),
-                rotAct and "IN BATTLE 🟢" or "Ready ⏳",
+            DmSlot2.Text = string.format("Slot 2 [Rotator]: %s (%s) [Done: %d]", 
+                Settings.MultiSlot2StoryMode, 
+                rotAct and "IN BATTLE 🟢" or "Ready ⏳", 
                 MultiSlot2QuotaDone)
         end
-    end)
 
-    pcall(function()
-        local status = SafeRiftStatus(now)
         if status.joinable then
-            DmRift.Text = string.format("Rift Portal: OPEN & JOINABLE (%s left) ⚡", SafeClock((status.joinEndsAt or now) - now))
+            local left = math.max(0, (status.joinEndsAt or now) - now)
+            DmRift.Text = string.format("Rift Portal: OPEN & JOINABLE (%s left) ⚡", SafeClock(left))
         elseif status.open then
-            DmRift.Text = "Rift Portal: OPEN (In Progress) 🟢"
+            DmRift.Text = string.format("Rift Portal: OPEN (In Progress) 🟢")
         else
-            DmRift.Text = string.format("Rift Portal: Closed (Next open in %s) ⏳", SafeClock((status.nextOpenAt or now) - now))
+            local nextIn = math.max(0, (status.nextOpenAt or (now + 600)) - now)
+            DmRift.Text = string.format("Rift Portal: Closed (Next open in %s) ⏳", SafeClock(nextIn))
         end
-    end)
 
-    pcall(function()
-        local cdSec = SafeCooldownLeft(s.StoryCooldowns, "toy_kingdom_secret", now)
+        local cdSec = SafeStoryCooldown(s.StoryCooldowns, "toy_kingdom_secret", now)
         if cdSec <= 0 then
             DmSecret.Text = "Secret Boss (Ruffy 4): READY TO FIGHT! 🟢"
             DmSecret.TextColor3 = Color3.fromRGB(46, 204, 113)
@@ -1624,11 +1535,13 @@ local function RefreshDualMonitor()
     end)
 end
 
-task.spawn(RefreshDualMonitor)
+-- Run immediately upon UI creation so labels NEVER stay on 'Checking...'
+task.spawn(UpdateDualMonitorUI)
+
 task.spawn(function()
     while true do
         task.wait(1)
-        RefreshDualMonitor()
+        UpdateDualMonitorUI()
     end
 end)
 
@@ -1724,22 +1637,18 @@ end)
 -- 2. TAB: 📖 STORY PAGE (Customizable Stage Checkboxes & Nightmare Loop)
 -- =====================================================================
 
-local _, _storyApi = CreateToggle(StoryPage, "⚡ Enable Standalone Story Farm", Settings.StoryFarmEnabled, function(val)
+CreateToggle(StoryPage, "⚡ Enable Standalone Story Farm", Settings.StoryFarmEnabled, function(val)
     Settings.StoryFarmEnabled = val
     if val then
         Settings.MultiBattleSystem = false
         Settings.TowerFarmEnabled = false
         Settings.EndgameFarmEnabled = false
         Settings.RiftFarmEnabled = false
-        if MultiMasterToggleApi then MultiMasterToggleApi.SetState(false) end
-        if TowerMasterToggleApi then TowerMasterToggleApi.SetState(false) end
-        if RiftMasterToggleApi then RiftMasterToggleApi.SetState(false) end
         SetStatus("Story Farm Activated")
     else
         SetStatus("Idle")
     end
 end)
-StoryMasterToggleApi = _storyApi
 
 CreateDropdown(StoryPage, "⚔️ Team / Loadout", TeamOptions, "Team " .. Settings.StoryTeam, function(val)
     Settings.StoryTeam = tonumber(val:match("%d+")) or 1
@@ -1813,7 +1722,7 @@ SmTitle.BackgroundTransparency = 1
 SmTitle.Parent = StoryMonitor
 
 local SmTarget = Instance.new("TextLabel")
-SmTarget.Text = "Next Farm Target: Ready"
+SmTarget.Text = "Next Target: Checking..."
 SmTarget.Font = Enum.Font.GothamMedium
 SmTarget.TextSize = 11
 SmTarget.TextColor3 = Color3.fromRGB(120, 215, 255)
@@ -1824,7 +1733,7 @@ SmTarget.BackgroundTransparency = 1
 SmTarget.Parent = StoryMonitor
 
 local SmSecret = Instance.new("TextLabel")
-SmSecret.Text = "Secret Boss (Ruffy 4): Ready"
+SmSecret.Text = "Secret Boss: Checking..."
 SmSecret.Font = Enum.Font.GothamMedium
 SmSecret.TextSize = 11
 SmSecret.TextColor3 = Color3.fromRGB(255, 150, 180)
@@ -1840,14 +1749,16 @@ task.spawn(function()
         pcall(function()
             local now = GetSafeTime()
             local s = GetSafeState()
-            local cdSec = SafeCooldownLeft(s.StoryCooldowns, "toy_kingdom_secret", now)
+            local cdSec = SafeStoryCooldown(s.StoryCooldowns, "toy_kingdom_secret", now)
+            
             local stg, diff, name = GetNextStoryTarget(Settings.SelectedWorld, Settings.SelectedDifficulty)
-            SmTarget.Text = string.format("Next Farm Target: %s [%s]", tostring(name), tostring(diff))
+            SmTarget.Text = string.format("Next Farm Target: %s [%s]", name, diff)
+
             if cdSec <= 0 then
                 SmSecret.Text = "Secret Boss (Ruffy 4): READY TO FIGHT! 🟢 (Priority: Next!)"
                 SmSecret.TextColor3 = Color3.fromRGB(46, 204, 113)
             else
-                SmSecret.Text = string.format("Secret Boss (Ruffy 4): Cooldown %s ⏳", SafeClock(cdSec))
+                SmSecret.Text = string.format("Secret Boss (Ruffy 4): Cooldown %s ⏳", RiftConfig.Clock(cdSec))
                 SmSecret.TextColor3 = Color3.fromRGB(255, 150, 180)
             end
         end)
@@ -1858,22 +1769,18 @@ end)
 -- 3. TAB: 🗼 TOWER PAGE
 -- =====================================================================
 
-local _, _towerApi = CreateToggle(TowerPage, "🗼 Enable Standalone Tower Farm", Settings.TowerFarmEnabled, function(val)
+CreateToggle(TowerPage, "🗼 Enable Standalone Tower Farm", Settings.TowerFarmEnabled, function(val)
     Settings.TowerFarmEnabled = val
     if val then
         Settings.MultiBattleSystem = false
         Settings.StoryFarmEnabled = false
         Settings.EndgameFarmEnabled = false
         Settings.RiftFarmEnabled = false
-        if MultiMasterToggleApi then MultiMasterToggleApi.SetState(false) end
-        if StoryMasterToggleApi then StoryMasterToggleApi.SetState(false) end
-        if RiftMasterToggleApi then RiftMasterToggleApi.SetState(false) end
         SetStatus("Tower Farm Activated")
     else
         SetStatus("Idle")
     end
 end)
-TowerMasterToggleApi = _towerApi
 
 CreateDropdown(TowerPage, "🗼 Team / Loadout", TeamOptions, "Team " .. Settings.TowerTeam, function(val)
     Settings.TowerTeam = tonumber(val:match("%d+")) or 1
@@ -1891,22 +1798,18 @@ end)
 -- 4. TAB: 🌀 RIFTS PAGE
 -- =====================================================================
 
-local _, _riftApi = CreateToggle(RiftPage, "🌀 Enable Standalone Rifts Farm", Settings.RiftFarmEnabled, function(val)
+CreateToggle(RiftPage, "🌀 Enable Standalone Rifts Farm", Settings.RiftFarmEnabled, function(val)
     Settings.RiftFarmEnabled = val
     if val then
         Settings.MultiBattleSystem = false
         Settings.StoryFarmEnabled = false
         Settings.TowerFarmEnabled = false
         Settings.EndgameFarmEnabled = false
-        if MultiMasterToggleApi then MultiMasterToggleApi.SetState(false) end
-        if StoryMasterToggleApi then StoryMasterToggleApi.SetState(false) end
-        if TowerMasterToggleApi then TowerMasterToggleApi.SetState(false) end
         SetStatus("Rifts Farm Activated")
     else
         SetStatus("Idle")
     end
 end)
-RiftMasterToggleApi = _riftApi
 
 CreateDropdown(RiftPage, "⚔️ Rift Team", TeamOptions, "Team " .. Settings.RiftTeam, function(val)
     Settings.RiftTeam = tonumber(val:match("%d+")) or 3
