@@ -70,20 +70,63 @@ local function GetSafeState()
     return {}
 end
 
+local RiftSnapshot = nil
+local RiftSnapshotAt = -math.huge
+local RiftCheckPending = false
+local RiftCheckStarted = 0
+local RiftNextCheck = 0
+local RiftCheckError = nil
+
 local function SafeRiftStatus(nowTime)
     nowTime = nowTime or GetSafeTime()
-    local ok, st = pcall(function() return RiftConfig.Status(nowTime) end)
-    if ok and typeof(st) == "table" then return st end
-    return { joinable = false, open = false, nextOpenAt = nowTime + 600, joinEndsAt = nowTime + 300 }
+    local tickNow = os.clock()
+    if not RiftCheckPending and tickNow >= RiftNextCheck then
+        RiftCheckPending = true
+        RiftCheckStarted = tickNow
+        task.defer(function()
+            local ok, result = pcall(function() return RiftConfig.Status(nowTime) end)
+            local finishedAt = os.clock()
+            RiftCheckPending = false
+            RiftNextCheck = finishedAt + (ok and 2 or 10)
+            if ok and typeof(result) == "table"
+                and typeof(result.joinable) == "boolean"
+                and typeof(result.open) == "boolean"
+                and typeof(result.nextOpenAt) == "number" then
+                RiftSnapshot = result
+                -- A delayed result describes the request time, not completion time.
+                RiftSnapshotAt = tickNow
+                RiftCheckError = nil
+            else
+                RiftSnapshot = nil
+                RiftCheckError = ok and "Invalid Rift status" or tostring(result)
+                RiftNextCheck = finishedAt + 10
+            end
+        end)
+    end
+    if RiftSnapshot and tickNow - RiftSnapshotAt <= 5 then
+        local result = table.clone(RiftSnapshot)
+        if result.joinable and typeof(result.joinEndsAt) == "number" and nowTime >= result.joinEndsAt then
+            result.joinable = false
+        end
+        if result.open and typeof(result.closesAt) == "number" and nowTime >= result.closesAt then
+            result.open = false
+            result.joinable = false
+        end
+        return result
+    end
+    local reason = RiftCheckError or "Reading Rift status"
+    if RiftCheckPending and tickNow - RiftCheckStarted >= 5 then
+        reason = "RiftConfig.Status not responding; Story/Tower can continue"
+    end
+    return {available = false, reason = reason, joinable = false, open = false,
+        nextOpenAt = nowTime + 5, joinEndsAt = nowTime}
 end
 
 local function SafeClock(sec)
-    if not sec or sec <= 0 then return "0:00" end
-    local ok, res = pcall(function() return RiftConfig.Clock(sec) end)
-    if ok and typeof(res) == "string" then return res end
-    local m = math.floor(sec / 60)
-    local s = math.floor(sec % 60)
-    return string.format("%d:%02d", m, s)
+    local n = tonumber(sec) or 0
+    if n ~= n or n == math.huge or n <= 0 then return "0:00" end
+    local total = math.ceil(n)
+    return string.format("%d:%02d", math.floor(total / 60), total % 60)
 end
 
 local function SafeStoryCooldown(cooldowns, stageId, nowTime)
@@ -908,7 +951,7 @@ task.spawn(function()
             local inside = LocalPlayer:GetAttribute("RiftInside") == true
 
             if not inside then
-                if status.joinable or status.open then
+                if status.joinable then
                     if Settings.RiftAutoEnter then
                         SetStatus("Rifts: Entering Portal...")
                         local enterRes = RemoteRiftAction:InvokeServer("Enter")
@@ -1506,21 +1549,12 @@ DmSecret.TextXAlignment = Enum.TextXAlignment.Left
 DmSecret.BackgroundTransparency = 1
 DmSecret.Parent = DualMonitor
 
-local function MonitorStage(name)
-    DmSlot1.Text = 'Mobile check: ' .. name
-end
-DmSlot1.Text = 'Mobile diagnostic v1: starting'
 local function UpdateDualMonitorUI()
     local ok, err = pcall(function()
-        MonitorStage("BattleController / Tower")
         local towerAct = IsTowerBattleActive()
-        MonitorStage("BattleController / Rotator")
         local rotAct = IsRotatorBattleActive()
-        MonitorStage("Server time")
         local now = GetSafeTime()
-        MonitorStage("StateController:Get")
         local s = GetSafeState()
-        MonitorStage("RiftConfig.Status")
         local status = SafeRiftStatus(now)
 
         DmSlot1.Text = string.format("Slot 1 [Tower]: %s (%s) [Team %d]", 
@@ -1544,7 +1578,10 @@ local function UpdateDualMonitorUI()
             DmSlot2.TextWrapped = true
         end
 
-        if status.joinable then
+        if status.available == false then
+            DmRift.Text = "Rift: " .. tostring(status.reason)
+            DmRift.TextWrapped = true
+        elseif status.joinable then
             local left = math.max(0, (status.joinEndsAt or now) - now)
             DmRift.Text = string.format("Rift Portal: OPEN & JOINABLE (%s left) ⚡", SafeClock(left))
         elseif status.open then
