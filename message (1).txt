@@ -59,7 +59,7 @@ local RemoteTeleport = Remotes.GetFunction(Remotes.Teleport)
 -- =====================================================================
 
 local function GetSafeTime()
-    local ok, t = pcall(function() return GetSafeTime() end)
+    local ok, t = pcall(function() return workspace:GetServerTimeNow() end)
     if ok and typeof(t) == "number" and t > 0 then return t end
     return os.time()
 end
