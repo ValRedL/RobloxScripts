@@ -111,10 +111,20 @@ local RemoteTeleport = Remotes.GetFunction(Remotes.Teleport)
 
 
 -- =====================================================================
-
 -- SAFE PLATFORM ADAPTERS (Crash-Proof Mobile & PC Support)
-
 -- =====================================================================
+
+local function ElevateThread()
+    pcall(function()
+        if setthreadidentity then
+            setthreadidentity(8)
+        elseif setidentity then
+            setidentity(8)
+        elseif set_thread_identity then
+            set_thread_identity(8)
+        end
+    end)
+end
 
 
 
@@ -191,12 +201,22 @@ local function SafeStoryCooldown(cooldowns, stageId, nowTime)
 end
 
 local function SafeInvokeServer(remote, ...)
+    ElevateThread()
     if not remote then return nil end
     local args = {...}
     local ok, res = pcall(function()
+        ElevateThread()
         return remote:InvokeServer(unpack(args))
     end)
     if ok then return res end
+    if typeof(res) == "string" and (string.find(string.lower(res), "cannot access") or string.find(string.lower(res), "capability")) then
+        ElevateThread()
+        local ok2, res2 = pcall(function()
+            ElevateThread()
+            return remote:InvokeServer(unpack(args))
+        end)
+        if ok2 then return res2 end
+    end
     return nil
 end
 
@@ -626,41 +646,48 @@ local function StoryTargetReady(stageId)
 end
 
 local function TryStoryFight(stageId, difficulty)
-
+    ElevateThread()
     if not StoryTargetReady(stageId) then
-
         return {ok = false, reason = LastStoryFailure, retryPending = true}
-
     end
 
     local ok, result = pcall(function()
-
+        ElevateThread()
         return RemoteStoryFight:InvokeServer(stageId, difficulty)
-
     end)
 
     if ok and typeof(result) == "table" and result.ok then
-
         StoryRetryAt[stageId] = nil
-
         LastStoryFailure = ""
-
         return result
-
     end
 
-    local reason = ok and (typeof(result) == "table" and result.reason or "No valid server response") or result
+    local isCapabilityErr = false
+    local reason = "Unknown"
+    if ok then
+        if typeof(result) == "table" then
+            reason = result.reason or "Rejected by server"
+        else
+            reason = tostring(result)
+        end
+    else
+        reason = tostring(result)
+        if string.find(string.lower(reason), "cannot access") or string.find(string.lower(reason), "capability") then
+            isCapabilityErr = true
+        end
+    end
 
-    LastStoryFailure = tostring(stageId) .. ": " .. tostring(reason)
+    if isCapabilityErr then
+        ElevateThread()
+        StoryRetryAt[stageId] = os.clock() + 1.0
+        LastStoryFailure = "Elevating thread permissions (Retrying...)"
+    else
+        LastStoryFailure = tostring(stageId) .. ": " .. tostring(reason)
+        StoryRetryAt[stageId] = os.clock() + 3.0
+    end
 
-    StoryRetryAt[stageId] = os.clock() + (ok and 60 or 10)
-
-    SetStatus("Story rejected: " .. LastStoryFailure)
-
-    warn("[ACB Story] " .. LastStoryFailure)
-
+    SetStatus("Story: " .. LastStoryFailure)
     return {ok = false, reason = tostring(reason)}
-
 end
 
 
@@ -902,6 +929,7 @@ end
 
 
 local function IsTowerBattleActive()
+    ElevateThread()
     local active = false
     pcall(function()
         if (BattleController.IsActive and BattleController.IsActive()) or (BattleController.isActive and BattleController:isActive()) then
@@ -928,6 +956,7 @@ end
 
 
 local function IsRotatorBattleActive()
+    ElevateThread()
     local active = false
     pcall(function()
         if (BattleController.IsActive and BattleController.IsActive()) or (BattleController.isActive and BattleController:isActive()) then
@@ -1172,15 +1201,12 @@ end)
 -- SLOT 2: Smart Priority Rotator Loop (Story Mobs/Secret Boss <-> Rifts)
 
 task.spawn(function()
-
     while true do
-
         task.wait(0.8)
-
+        ElevateThread()
         local slotOk, slotError = pcall(function()
-
+            ElevateThread()
             if Settings.MultiBattleSystem and Settings.MultiSlot2Enabled then
-
             if not IsRotatorBattleActive() then
 
                 local now = GetSafeTime()
@@ -1243,7 +1269,7 @@ task.spawn(function()
 
                                     SetStatus("Multi [Slot 2]: Pipeline Done -> Entering Rift...")
 
-                                    RemoteRiftAction:InvokeServer("Enter")
+                                    SafeInvokeServer(RemoteRiftAction, "Enter")
 
                                     task.wait(2)
 
@@ -1255,7 +1281,7 @@ task.spawn(function()
 
                                     if Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)" then
 
-                                        local rState = RemoteRiftAction:InvokeServer("State")
+                                        local rState = SafeInvokeServer(RemoteRiftAction, "State")
 
                                         if rState and rState.ok and typeof(rState.beaten) == "table" then
 
@@ -1305,7 +1331,7 @@ task.spawn(function()
 
                                         end)
 
-                                        local fightRes = RemoteRiftAction:InvokeServer("Fight", targetRiftBoss)
+                                        local fightRes = SafeInvokeServer(RemoteRiftAction, "Fight", targetRiftBoss)
 
                                         if fightRes and fightRes.ok then
 
@@ -1351,7 +1377,7 @@ task.spawn(function()
 
                                         SetStatus(string.format("Multi [Slot 2]: %s on CD -> Entering Rift...", curStep.Name))
 
-                                        RemoteRiftAction:InvokeServer("Enter")
+                                        SafeInvokeServer(RemoteRiftAction, "Enter")
 
                                         task.wait(2)
 
@@ -1361,7 +1387,7 @@ task.spawn(function()
 
                                         if Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)" then
 
-                                            local rState = RemoteRiftAction:InvokeServer("State")
+                                            local rState = SafeInvokeServer(RemoteRiftAction, "State")
 
                                             if rState and rState.ok and typeof(rState.beaten) == "table" then
 
@@ -1391,7 +1417,7 @@ task.spawn(function()
 
                                         SetStatus(string.format("Multi [Slot 2]: Rifts vs %s...", bName))
 
-                                        local fightRes = RemoteRiftAction:InvokeServer("Fight", targetRiftBoss)
+                                        local fightRes = SafeInvokeServer(RemoteRiftAction, "Fight", targetRiftBoss)
 
                                         if fightRes and fightRes.ok then
 
@@ -1518,7 +1544,7 @@ task.spawn(function()
 
                             SetStatus("Multi [Slot 2]: Entering Rift Portal...")
 
-                            RemoteRiftAction:InvokeServer("Enter")
+                            SafeInvokeServer(RemoteRiftAction, "Enter")
 
                             task.wait(2)
 
@@ -1528,7 +1554,7 @@ task.spawn(function()
 
                             if Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)" then
 
-                                local rState = RemoteRiftAction:InvokeServer("State")
+                                local rState = SafeInvokeServer(RemoteRiftAction, "State")
 
                                 if rState and rState.ok and typeof(rState.beaten) == "table" then
 
@@ -1562,7 +1588,7 @@ task.spawn(function()
 
                             end)
 
-                            local fightRes = RemoteRiftAction:InvokeServer("Fight", targetRiftBoss)
+                            local fightRes = SafeInvokeServer(RemoteRiftAction, "Fight", targetRiftBoss)
 
                             if fightRes and fightRes.ok then
 
@@ -1622,14 +1648,16 @@ task.spawn(function()
 
         end
 
-        end)
-
+                end)
         if not slotOk then
-
-            LastStoryFailure = tostring(slotError)
-
-            SetStatus("Slot 2 error: " .. LastStoryFailure)
-
+            ElevateThread()
+            local errStr = tostring(slotError)
+            if string.find(string.lower(errStr), "cannot access") or string.find(string.lower(errStr), "capability") then
+                LastStoryFailure = "Elevating permissions... (Retrying)"
+            else
+                LastStoryFailure = errStr
+            end
+            SetStatus("Slot 2: " .. LastStoryFailure)
         end
 
     end
@@ -1818,7 +1846,7 @@ task.spawn(function()
 
                         SetStatus("Rifts: Entering Portal...")
 
-                        local enterRes = RemoteRiftAction:InvokeServer("Enter")
+                        local enterRes = SafeInvokeServer(RemoteRiftAction, "Enter")
 
                         if enterRes and enterRes.ok then task.wait(2) else task.wait(3) end
 
@@ -1862,7 +1890,7 @@ task.spawn(function()
 
                     if Settings.RiftAutoProgress then
 
-                        local riftState = RemoteRiftAction:InvokeServer("State")
+                        local riftState = SafeInvokeServer(RemoteRiftAction, "State")
 
                         if riftState and riftState.ok and typeof(riftState.beaten) == "table" then
 
@@ -3031,8 +3059,11 @@ local function UpdateDualMonitorUI()
                 MultiSlot2QuotaDone or 0)
         end
 
+        if rotAct then
+            LastStoryFailure = ""
+        end
         if LastStoryFailure and LastStoryFailure ~= "" then
-            DmSlot2.Text = "Story rejected (retry in up to 60s): " .. LastStoryFailure
+            DmSlot2.Text = string.format("Slot 2: %s", LastStoryFailure)
             DmSlot2.TextWrapped = true
         end
     end)
@@ -3716,7 +3747,7 @@ EnterRiftBtn.MouseButton1Click:Connect(function()
 
     pcall(function()
 
-        local res = RemoteRiftAction:InvokeServer("Enter")
+        local res = SafeInvokeServer(RemoteRiftAction, "Enter")
 
         SetStatus(res and res.ok and "Entered Rift Portal!" or tostring(res and res.reason or "Failed to enter"))
 
