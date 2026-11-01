@@ -1491,7 +1491,7 @@ DmSecret.BackgroundTransparency = 1
 DmSecret.Parent = DualMonitor
 
 local function UpdateDualMonitorUI()
-    pcall(function()
+    local ok, err = pcall(function()
         local towerAct = IsTowerBattleActive()
         local rotAct = IsRotatorBattleActive()
         local now = GetSafeTime()
@@ -1533,6 +1533,13 @@ local function UpdateDualMonitorUI()
             DmSecret.TextColor3 = Color3.fromRGB(255, 150, 180)
         end
     end)
+    if not ok then
+        DmSlot1.Text = 'Monitor error: ' .. tostring(err)
+        DmSlot1.TextWrapped = true
+        DmSlot2.Text = 'Status update failed; see error above'
+        DmRift.Text = 'Rift Portal: status unavailable'
+        DmSecret.Text = 'Secret Boss: status unavailable'
+    end
 end
 
 -- Run immediately upon UI creation so labels NEVER stay on 'Checking...'
