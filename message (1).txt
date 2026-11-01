@@ -153,6 +153,9 @@ local Settings = {
 
     -- Slot 2: Priority Rotator
     MultiSlot2Enabled = true,
+    MultiSlot2SmartCycle = true,
+    MultiSlot2ReturnStory = true,
+    MultiSlot2RiftRepeatBoss = 4,
     MultiSlot2Strategy = "Story -> Rifts", -- "Story -> Rifts", "Rifts (When Open) -> Story"
     MultiSlot2StoryMode = "Custom Pipeline", -- "Custom Pipeline", "Cycle Mobs + Secret Boss", "Boss CD Loop", "Quota 5 Battles"
     MultiSlot2StoryWorld = "toy_kingdom",
@@ -374,7 +377,20 @@ end
 -- =====================================================================
 local CONFIG_FILE = "acb_autofarm_config.json"
 
+local function NormalizeSlot2Settings()
+    local function boss(value, fallback)
+        local number = tonumber(value)
+        if not number or number ~= number then return fallback end
+        return math.clamp(math.floor(number), 1, 5)
+    end
+    Settings.MultiSlot2RiftRepeatBoss = boss(Settings.MultiSlot2RiftRepeatBoss, 4)
+    Settings.MultiSlot2RiftBoss = boss(Settings.MultiSlot2RiftBoss, 1)
+    if typeof(Settings.MultiSlot2SmartCycle) ~= "boolean" then Settings.MultiSlot2SmartCycle = true end
+    if typeof(Settings.MultiSlot2ReturnStory) ~= "boolean" then Settings.MultiSlot2ReturnStory = true end
+end
+
 local function SaveConfig()
+    NormalizeSlot2Settings()
     if typeof(writefile) == "function" then
         pcall(function()
             writefile(CONFIG_FILE, HttpService:JSONEncode(Settings))
@@ -410,6 +426,7 @@ local function LoadConfig()
 end
 
 LoadConfig()
+NormalizeSlot2Settings()
 
 -- Apply loaded performance configs
 if Settings.CpuGpuSaver then
@@ -587,6 +604,134 @@ local CustomPipelineStages = {
 }
 local CustomPipelineIndex = 1
 
+local function PickRiftBoss(beaten, progress, specific, repeatBoss)
+    if not progress then return specific end
+    for i = 1, 5 do
+        if not beaten[i] and not beaten[tostring(i)] then return i end
+    end
+    return repeatBoss
+end
+
+local function ChooseSmartAction(cycle, ready, secretReady, riftAvailable, returnStory)
+    if secretReady then return "secret" end
+    if cycle.storyPhase then
+        for i = cycle.index, #CustomPipelineStages do
+            if ready[i] then return "story", i end
+        end
+        cycle.storyPhase = false
+        cycle.index = #CustomPipelineStages + 1
+    end
+    -- Give Rift one completed fight between Story rounds, even if mobs have no cooldown.
+    if not riftAvailable or (returnStory and cycle.riftFought) then
+        for i = 1, #CustomPipelineStages do
+            if ready[i] then return "story", i end
+        end
+    end
+    if riftAvailable then return "rift" end
+    return "wait"
+end
+
+local SmartCycle = {storyPhase = true, index = 1, riftFought = false}
+local SmartNextAttempt = 0
+local SmartStatus = "Ready"
+local LastRiftAutoSetting = nil
+
+local function SyncSmartAutoRepeat()
+    local desired = Settings.MultiSlot2RiftAutoRepeat
+    if Settings.MultiSlot2SmartCycle then desired = false end
+    if LastRiftAutoSetting ~= desired then
+        local ok = pcall(function() SettingsController:Set("AutoRift", desired) end)
+        if ok then LastRiftAutoSetting = desired end
+        return ok
+    end
+    return true
+end
+
+local function SmartSetStatus(message)
+    SmartStatus = message
+    SetStatus("Slot 2: " .. message)
+end
+
+local function SmartTeamReady(team)
+    SwitchTeam(team)
+    if GetSafeState().ActiveLoadout ~= team then
+        SmartSetStatus("Waiting for Team " .. tostring(team))
+        return false
+    end
+    return true
+end
+
+local function RunSmartSlot2(state, now, riftInside, riftAvailable)
+    if os.clock() < SmartNextAttempt then return end
+    local ready = {}
+    for i, stage in ipairs(CustomPipelineStages) do
+        ready[i] = StoryTargetReady(stage.Id)
+            and SafeStoryCooldown(state.StoryCooldowns, stage.Id, now) <= 0
+    end
+    local secretReady = Settings.StorySecretBoss and StoryTargetReady("toy_kingdom_secret")
+        and SafeStoryCooldown(state.StoryCooldowns, "toy_kingdom_secret", now) <= 0
+    local action, index = ChooseSmartAction(SmartCycle, ready, secretReady,
+        riftAvailable, Settings.MultiSlot2ReturnStory)
+    if action == "secret" or action == "story" then
+        if not SmartTeamReady(Settings.StoryTeam) then return end
+        local stage = action == "secret"
+            and {Id = "toy_kingdom_secret", Diff = "Secret", Name = "Secret Boss"}
+            or CustomPipelineStages[index]
+        SmartSetStatus("Story: " .. stage.Name)
+        local res = TryStoryFight(stage.Id, stage.Diff)
+        if action == "story" then
+            SmartCycle.storyPhase = true
+            SmartCycle.index = index + 1
+            SmartCycle.riftFought = false
+            CustomPipelineIndex = index + 1
+        end
+        if res and res.ok then
+            EnsureAutoBattle()
+        else
+            SmartSetStatus("Story unavailable: " .. tostring(res and res.reason))
+        end
+        SmartNextAttempt = os.clock() + 2.5
+    elseif action == "rift" then
+        if not riftInside then
+            local res = RemoteRiftAction:InvokeServer("Enter")
+            if not res or not res.ok then SmartCycle.riftFought = true end
+            SmartSetStatus(res and res.ok and "Entering Rift"
+                or ("Rift entry failed: " .. tostring(res and res.reason)))
+            SmartNextAttempt = os.clock() + 5
+            return
+        end
+        local progress = Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)"
+        local beaten = {}
+        if progress then
+            local rs = RemoteRiftAction:InvokeServer("State")
+            if not rs or not rs.ok or typeof(rs.beaten) ~= "table" then
+                SmartCycle.riftFought = true
+                SmartSetStatus("Rift status unavailable; retrying")
+                SmartNextAttempt = os.clock() + 5
+                return
+            end
+            beaten = rs.beaten
+        end
+        local boss = PickRiftBoss(beaten, progress, Settings.MultiSlot2RiftBoss,
+            Settings.MultiSlot2RiftRepeatBoss)
+        if not SmartTeamReady(Settings.MultiSlot2RiftTeam) then return end
+        local res = RemoteRiftAction:InvokeServer("Fight", boss)
+        if res and res.ok then
+            SmartCycle.riftFought = true
+            SmartSetStatus("Rift Boss " .. tostring(boss) .. "; checking Story after fight")
+            EnsureAutoBattle()
+        else
+            SmartCycle.riftFought = true
+            SmartSetStatus("Rift fight failed: " .. tostring(res and res.reason))
+        end
+        SmartNextAttempt = os.clock() + 3
+    else
+        SmartSetStatus("Waiting for Story cooldown / Rift entry")
+        SmartNextAttempt = os.clock() + 2
+    end
+end
+
+
 -- SLOT 1: Dedicated Endless Tower Loop
 task.spawn(function()
     while true do
@@ -635,6 +780,10 @@ task.spawn(function()
         task.wait(0.8)
         local slotOk, slotError = pcall(function()
             if Settings.MultiBattleSystem and Settings.MultiSlot2Enabled then
+            if not SyncSmartAutoRepeat() then
+                SmartSetStatus("Waiting to configure Rift auto-repeat")
+                return
+            end
             if not IsRotatorBattleActive() then
                 local now = GetSafeTime()
                 local riftStatus = SafeRiftStatus(now)
@@ -646,7 +795,9 @@ task.spawn(function()
                 -- ⭐ MODE A: CUSTOM PIPELINE
                 -- Ruffy Secret (on CD) -> Toy Kingdom 1..4 (Nightmare) -> Purple Town Boss (Nightmare) -> Rifts
                 -- =================================================================
-                if Settings.MultiSlot2StoryMode == "Custom Pipeline" then
+                if Settings.MultiSlot2SmartCycle then
+                    RunSmartSlot2(state, now, riftInside, riftAvailable)
+                elseif Settings.MultiSlot2StoryMode == "Custom Pipeline" then
                     -- 1. TOP PRIORITY: Secret Boss Ruffy 4 (toy_kingdom_secret)
                     local ruffyCd = SafeStoryCooldown(state.StoryCooldowns, "toy_kingdom_secret", now)
                     if ruffyCd <= 0 and Settings.StorySecretBoss and StoryTargetReady("toy_kingdom_secret") then
@@ -684,8 +835,8 @@ task.spawn(function()
                                             if foundUnbeaten then
                                                 targetRiftBoss = foundUnbeaten
                                             else
-                                                -- All 5 bosses cleared! Keep farming Boss 5 (Funny President) repeatedly until Rift closes!
-                                                targetRiftBoss = 5
+                                                -- All cleared: repeat the boss selected in the menu.
+                                                targetRiftBoss = Settings.MultiSlot2RiftRepeatBoss
                                             end
                                         end
                                     end
@@ -734,7 +885,7 @@ task.spawn(function()
                                                         break
                                                     end
                                                 end
-                                                targetRiftBoss = foundUnbeaten or 5
+                                                targetRiftBoss = foundUnbeaten or Settings.MultiSlot2RiftRepeatBoss
                                             end
                                         end
                                         SwitchTeam(Settings.MultiSlot2RiftTeam)
@@ -811,6 +962,7 @@ task.spawn(function()
                             if Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)" then
                                 local rState = RemoteRiftAction:InvokeServer("State")
                                 if rState and rState.ok and typeof(rState.beaten) == "table" then
+                                    targetRiftBoss = Settings.MultiSlot2RiftRepeatBoss
                                     for bIdx = 1, #RiftBosses do
                                         if not rState.beaten[bIdx] then
                                             targetRiftBoss = bIdx
@@ -1333,6 +1485,8 @@ local function CreatePage(canvasH)
 end
 
 local MultiPage = CreatePage(880)
+MultiPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
+MultiPage.CanvasSize = UDim2.new(0, 0, 0, 0)
 local StoryPage = CreatePage(820)
 local TowerPage = CreatePage(400)
 local RiftPage = CreatePage(560)
@@ -1562,7 +1716,10 @@ local function UpdateDualMonitorUI()
             towerAct and "IN BATTLE 🟢" or "Searching/Ready ⏳", 
             Settings.MultiSlot1Team)
 
-        if Settings.MultiSlot2StoryMode == "Custom Pipeline" then
+        if Settings.MultiSlot2SmartCycle then
+            DmSlot2.Text = "Slot 2 [Auto]: " .. SmartStatus
+            DmSlot2.TextWrapped = true
+        elseif Settings.MultiSlot2StoryMode == "Custom Pipeline" then
             local curStageName = (CustomPipelineStages[CustomPipelineIndex] and CustomPipelineStages[CustomPipelineIndex].Name) or "Rifts Mode"
             local stepTxt = CustomPipelineIndex <= #CustomPipelineStages and string.format("Step %d/5 (%s)", CustomPipelineIndex, curStageName) or "Rifts Mode"
             DmSlot2.Text = string.format("Slot 2 [Pipeline]: %s (%s)", stepTxt, rotAct and "IN BATTLE 🟢" or "Ready ⏳")
@@ -1645,6 +1802,30 @@ CreateToggle(MultiPage, "🔄 Enable Slot 2 (Priority Rotator)", Settings.MultiS
     Settings.MultiSlot2Enabled = val
 end)
 
+CreateSectionHeader(MultiPage, "ตั้งค่าอัตโนมัติ Story + Rift", Color3.fromRGB(130, 230, 160))
+CreateToggle(MultiPage, "สลับ Story + Rift อัตโนมัติ", Settings.MultiSlot2SmartCycle, function(val)
+    Settings.MultiSlot2SmartCycle = val
+    SmartCycle = {storyPhase = true, index = 1, riftFought = false}
+    SmartNextAttempt = 0
+    LastRiftAutoSetting = nil
+end)
+CreateToggle(MultiPage, "กลับ Story เมื่อหมดคูลดาวน์", Settings.MultiSlot2ReturnStory, function(val)
+    Settings.MultiSlot2ReturnStory = val
+end)
+CreateDropdown(MultiPage, "บอสตีซ้ำหลังครบ 1–5", RiftBossOptions,
+    RiftBossOptions[Settings.MultiSlot2RiftRepeatBoss], function(val)
+        Settings.MultiSlot2RiftRepeatBoss = tonumber(val:match("%d+")) or 4
+    end)
+local SmartNote = Instance.new("TextLabel")
+SmartNote.Size = UDim2.new(1, 0, 0, 76)
+SmartNote.BackgroundTransparency = 1
+SmartNote.Font = Enum.Font.GothamMedium
+SmartNote.TextSize = 11
+SmartNote.TextColor3 = Color3.fromRGB(180, 220, 200)
+SmartNote.TextWrapped = true
+SmartNote.Text = "เปิดโหมดนี้: Secret → Story 5 ด่านเดิม → Rift\nเช็ก Story หลังจบไฟต์ / บันทึกค่าอัตโนมัติ\nใช้ทีม Story และ Rift ด้านล่าง\nRotator Strategy / Story Mode / Auto Repeat ใช้เมื่อปิดโหมดนี้"
+SmartNote.Parent = MultiPage
+
 CreateDropdown(MultiPage, "Rotator Strategy", MultiStrategyOptions, Settings.MultiSlot2Strategy, function(val)
     Settings.MultiSlot2Strategy = val
 end)
@@ -1703,7 +1884,7 @@ CreateDropdown(MultiPage, "Rift Team / Loadout", TeamOptions, "Team " .. Setting
     Settings.MultiSlot2RiftTeam = tonumber(val:match("%d+")) or 3
 end)
 
-CreateToggle(MultiPage, "🔁 In-Game Auto Repeat Rift", Settings.MultiSlot2RiftAutoRepeat, function(val)
+CreateToggle(MultiPage, "Auto Repeat (เมื่อปิดโหมดอัตโนมัติ)", Settings.MultiSlot2RiftAutoRepeat, function(val)
     Settings.MultiSlot2RiftAutoRepeat = val
 end)
 
