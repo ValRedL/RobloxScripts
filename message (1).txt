@@ -324,6 +324,24 @@ local RiftBosses = {
 local Difficulties = {"Nightmare", "Hard", "Medium", "Easy"}
 local DifficultiesWithSecret = {"Nightmare", "Hard", "Medium", "Easy", "Secret"}
 local Towers = {"Hardcore", "Infinite", "Potion"}
+local Slot1Towers = {"Hardcore", "Infinite", "Potion", "Halloween Tower"}
+local function ResolveSlot1Tower(selected, serverTowers)
+    if selected ~= "Halloween Tower" then return selected end
+    if typeof(serverTowers) ~= "table" then return nil, "Tower list unavailable" end
+    local matches = {}
+    for id in pairs(serverTowers) do
+        if typeof(id) == "string" then
+            local lower = string.lower(id)
+            if string.find(lower, "halloween", 1, true) or string.find(lower, "haloween", 1, true) then
+                table.insert(matches, id)
+            end
+        end
+    end
+    if #matches == 1 then return matches[1] end
+    if #matches > 1 then return nil, "Multiple Halloween towers found; exact ID required" end
+    return nil, "Halloween Tower not listed by server; try entering it manually once"
+end
+
 local TeamOptions = {"Team 1", "Team 2", "Team 3"}
 local FpsOptions = {"Uncapped", "60 FPS", "30 FPS", "15 FPS"}
 local MultiStrategyOptions = {"Story -> Rifts", "Rifts (When Open) -> Story"}
@@ -745,13 +763,21 @@ task.spawn(function()
 
                 local stateRes = RemoteTowerAction:InvokeServer("State")
                 if stateRes and stateRes.ok and stateRes.state then
+                    local resolved, resolveError = ResolveSlot1Tower(towerName, stateRes.state.towers)
+                    if not resolved then
+                        SetStatus("Slot 1: " .. tostring(resolveError))
+                        task.wait(5)
+                        return
+                    end
+                    towerName = resolved
                     local towerState = stateRes.state.towers and stateRes.state.towers[towerName] or {}
                     local run = towerState.run
                     
                     if run then
                         SetStatus(string.format("Multi [Slot 1]: Resuming %s Tower...", towerName))
-                        RemoteTowerAction:InvokeServer("Resume", towerName)
-                        EnsureAutoBattle()
+                        local resumeRes = RemoteTowerAction:InvokeServer("Resume", towerName)
+                        if resumeRes and resumeRes.ok then EnsureAutoBattle()
+                        else SetStatus("Slot 1: " .. tostring(resumeRes and resumeRes.reason or "Resume failed")) end
                         task.wait(2)
                     elseif Settings.MultiSlot1Restart then
                         SetStatus(string.format("Multi [Slot 1]: Starting %s Tower...", towerName))
@@ -760,6 +786,7 @@ task.spawn(function()
                             EnsureAutoBattle()
                             task.wait(2)
                         else
+                            SetStatus("Slot 1: " .. tostring(startRes and startRes.reason or "Start failed"))
                             task.wait(2.5)
                         end
                     end
@@ -1783,7 +1810,7 @@ CreateToggle(MultiPage, "🗼 Enable Slot 1 (Endless Tower)", Settings.MultiSlot
     Settings.MultiSlot1Enabled = val
 end)
 
-CreateDropdown(MultiPage, "Select Tower", Towers, Settings.MultiSlot1Tower, function(val)
+CreateDropdown(MultiPage, "Select Tower", Slot1Towers, Settings.MultiSlot1Tower, function(val)
     Settings.MultiSlot1Tower = val
 end)
 
