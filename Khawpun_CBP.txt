@@ -189,6 +189,26 @@ function TabClass:CreateToggle(cfg)
     }
 end
 
+function TabClass:CreateSlider(cfg)
+    local idx = nextIdx(cfg.Flag)
+    local rng = cfg.Range or { 0, 100 }
+    self:_box():AddSlider(idx, {
+        Text = cfg.Name,
+        Default = cfg.CurrentValue or rng[1],
+        Min = rng[1],
+        Max = rng[2],
+        Rounding = (cfg.Increment and cfg.Increment < 1) and 2 or 0,
+        Suffix = cfg.Suffix or "",
+        Callback = function(v) if cfg.Callback then cfg.Callback(v) end end,
+    })
+    return {
+        Set = function(_, v)
+            local s = LOptions[idx]
+            if s then pcall(function() s:SetValue(v) end) end
+        end,
+    }
+end
+
 function TabClass:CreateDropdown(cfg)
     local idx = nextIdx(cfg.Flag)
     local values = cfg.Options or {}
@@ -320,7 +340,7 @@ function Rayfield:CreateWindow(cfg)
     end
     LWindow = Library:CreateWindow({
         Title = cfg.Name,
-        Footer = "Titan Hub (UPD 3)  •  Card Battles: Prestige",
+        Footer = "KhawpunHub (UPD 3)  •  Card Battles: Prestige",
         Center = true,
         AutoShow = true,
         Resizable = true,
@@ -397,7 +417,7 @@ end
 function Rayfield:Notify(cfg)
     pcall(function()
         Library:Notify({
-            Title = cfg.Title or "Titan Hub",
+            Title = cfg.Title or "KhawpunHub",
             Description = cfg.Content or "",
             Time = cfg.Duration or 4,
         })
@@ -498,8 +518,8 @@ function Rayfield:LoadConfiguration()
     SaveManager:SetLibrary(Library)
     SaveManager:IgnoreThemeSettings()
     SaveManager:SetIgnoreIndexes(ignoreIdx)
-    ThemeManager:SetFolder("TitanRNG_Smart")
-    SaveManager:SetFolder("TitanRNG_Smart")
+    ThemeManager:SetFolder("KhawpunRNG_Smart")
+    SaveManager:SetFolder("KhawpunRNG_Smart")
     SaveManager:BuildConfigSection(settings)
     ThemeManager:ApplyToTab(settings)
 
@@ -578,9 +598,9 @@ pcall(function()
 end)
 
 local Window = Rayfield:CreateWindow({
-   Name = "Titan Hub (UPD 3)",
+   Name = "KhawpunHub (UPD 3)",
    LoadingTitle = "Loading...",
-   ConfigurationSaving = { Enabled = true, FolderName = "TitanRNG_Smart", FileName = "Config" }
+   ConfigurationSaving = { Enabled = true, FolderName = "KhawpunRNG_Smart", FileName = "Config" }
 })
 pcall(function()
     if Library.UpdateColorsUsingRegistry then Library:UpdateColorsUsingRegistry() end
@@ -689,7 +709,7 @@ for name, assign in pairs(RemoteSlots) do
         if obj then
             assign(obj)
         else
-            warn("[Titan Hub] missing remote: " .. name)
+            warn("[KhawpunHub] missing remote: " .. name)
             pcall(function()
                 Rayfield:Notify({ Title = "Missing remote", Content = name, Duration = 6 })
             end)
@@ -1916,11 +1936,11 @@ do
         if scriptStopped then
             offBtn.BackgroundColor3 = RED
             pauseEverything()
-            Rayfield:Notify({ Title = "Titan Hub", Content = "Paused. Your toggles and config are untouched.", Duration = 3 })
+            Rayfield:Notify({ Title = "KhawpunHub", Content = "Paused. Your toggles and config are untouched.", Duration = 3 })
         else
             offBtn.BackgroundColor3 = GREEN
             resumeEverything()
-            Rayfield:Notify({ Title = "Titan Hub", Content = "Resumed with your current toggles.", Duration = 3 })
+            Rayfield:Notify({ Title = "KhawpunHub", Content = "Resumed with your current toggles.", Duration = 3 })
         end
     end))
 
@@ -1959,7 +1979,7 @@ do
             if not moved then
                 local ok = pcall(function() Library:Toggle() end)
                 if not ok and Library.ToggleKeybind then
-                    warn("[Titan Hub] Library:Toggle() unavailable")
+                    warn("[KhawpunHub] Library:Toggle() unavailable")
                 end
             end
         end
@@ -2824,15 +2844,14 @@ RollTab:CreateToggle({
     end,
 })
 
-RollTab:CreateSlider({
-    Name = "Fast Roll Delay",
-    Range = { 0.01, 1.0 },
-    Increment = 0.01,
-    Suffix = "s",
-    CurrentValue = 0.05,
-    Flag = "FastRollDelaySlider",
-    Callback = function(Value)
-        FastRollDelay = Value
+RollTab:CreateDropdown({
+    Name = "Fast Roll Delay (seconds)",
+    Options = { "0.01", "0.02", "0.05", "0.1", "0.2", "0.5" },
+    CurrentOption = { "0.05" },
+    Flag = "FastRollDelayDrop",
+    Callback = function(Option)
+        local v = type(Option) == "table" and Option[1] or Option
+        FastRollDelay = tonumber(v) or 0.05
     end,
 })
 
@@ -3834,7 +3853,7 @@ local function makeLoop(every, fn)
             while Rayfield.Loading and alive() do task.wait(0.3) end
             while alive() do
                 local ok, err = pcall(fn, alive)
-                if not ok then warn("[Titan Hub] loop error: " .. tostring(err)) end
+                if not ok then warn("[KhawpunHub] loop error: " .. tostring(err)) end
                 local t = 0
                 while alive() and t < every do task.wait(1) t += 1 end
             end
@@ -5171,7 +5190,7 @@ do (function()
     local towerRemote
     task.spawn(function()
         towerRemote = Rep:WaitForChild("infinityTowerAction", 180)
-        if not towerRemote then warn("[Titan Hub] missing remote: infinityTowerAction") end
+        if not towerRemote then warn("[KhawpunHub] missing remote: infinityTowerAction") end
     end)
 
     local TargetFloor = 0
@@ -5238,7 +5257,7 @@ do (function()
     })
 
     autoToggle = TowerTab:CreateToggle({
-        Name = "Auto End when floor reaches target",
+        Name = "Auto End when floor reaches target (Auto Loop)",
         CurrentValue = false,
         Flag = "TowerAutoEnd",
         Callback = function(Value)
@@ -5254,13 +5273,19 @@ do (function()
                         local ok = endTowerPrepared()
                         Rayfield:Notify({
                             Title = "Infinity Tower",
-                            Content = ok and ("Reached floor " .. f .. " - ending the tower to claim the reward")
+                            Content = ok and ("Reached floor " .. f .. " - Ended tower! Staying active for next run...")
                                 or "Tower remote not ready yet",
                             Duration = 6,
                         })
                         if ok then
-                            autoToggle:Set(false)
-                            return
+                            local tEnd = os.clock()
+                            while autoToken == myToken and readFloor() ~= nil and os.clock() - tEnd < 12 do
+                                task.wait(1)
+                            end
+                            task.wait(5)
+                            while autoToken == myToken and (readFloor() == nil or (readFloor() or 0) < 1) do
+                                task.wait(1)
+                            end
                         end
                     end
                     task.wait(0.5)
@@ -5289,7 +5314,7 @@ do (function()
     })
 
     weatherToggle = TowerTab:CreateToggle({
-        Name = "Auto End tower on weather",
+        Name = "Auto End tower on weather (Auto Loop)",
         CurrentValue = false,
         Flag = "TowerEndOnWeather",
         Callback = function(Value)
@@ -5299,18 +5324,29 @@ do (function()
             task.spawn(function()
                 while weatherTok == myTok and Rayfield.Loading do task.wait(0.3) end
                 while weatherTok == myTok do
-                    local w = PerfCache.getWeather and PerfCache.getWeather()
-                    if w and EndWeathers[norm(w)] then
-                        local ok = endTowerPrepared()
-                        Rayfield:Notify({
-                            Title = "Infinity Tower",
-                            Content = ok and ("Weather " .. w .. " is active - ending the tower")
-                                or "Tower remote not ready yet",
-                            Duration = 6,
-                        })
-                        if ok then
-                            weatherToggle:Set(false)
-                            return
+                    local f = readFloor()
+                    if f and f >= 1 then
+                        local w = PerfCache.getWeather and PerfCache.getWeather()
+                        if w and EndWeathers[norm(w)] then
+                            local ok = endTowerPrepared()
+                            Rayfield:Notify({
+                                Title = "Infinity Tower",
+                                Content = ok and ("Weather " .. w .. " active on Floor " .. f .. " - Ended tower! Staying active for next run...")
+                                    or "Tower remote not ready yet",
+                                Duration = 6,
+                            })
+                            if ok then
+                                -- Do NOT disable toggle! Wait for current run to exit
+                                local tEnd = os.clock()
+                                while weatherTok == myTok and readFloor() ~= nil and os.clock() - tEnd < 12 do
+                                    task.wait(1)
+                                end
+                                task.wait(5)
+                                -- Wait until next tower run starts before checking weather again
+                                while weatherTok == myTok and (readFloor() == nil or (readFloor() or 0) < 1) do
+                                    task.wait(1)
+                                end
+                            end
                         end
                     end
                     task.wait(0.5)
@@ -6001,7 +6037,7 @@ do (function()
     task.spawn(function()
         shopRemote = Rep:WaitForChild("raidShopRequest", 180)
         if not shopRemote then
-            warn("[Titan Hub] missing remote: raidShopRequest")
+            warn("[KhawpunHub] missing remote: raidShopRequest")
             pcall(function() Rayfield:Notify({ Title = "Missing remote", Content = "raidShopRequest", Duration = 6 }) end)
         end
     end)
@@ -6451,7 +6487,7 @@ do (function()
     task.spawn(function()
         craftRemote = Rep:WaitForChild("craftItem", 180)
         if not craftRemote then
-            warn("[Titan Hub] missing remote: craftItem")
+            warn("[KhawpunHub] missing remote: craftItem")
             pcall(function() Rayfield:Notify({ Title = "Missing remote", Content = "craftItem", Duration = 6 }) end)
         end
     end)
@@ -6725,7 +6761,7 @@ do (function()
     task.spawn(function()
         endlessRemote = Rep:WaitForChild("endlessAction", 180)
         if not endlessRemote then
-            warn("[Titan Hub] missing remote: endlessAction")
+            warn("[KhawpunHub] missing remote: endlessAction")
             pcall(function() Rayfield:Notify({ Title = "Missing remote", Content = "endlessAction", Duration = 6 }) end)
         end
     end)
@@ -6871,7 +6907,7 @@ do (function()
     task.spawn(function()
         prestigeRemote = Rep:WaitForChild("runPrestigeTower", 180)
         if not prestigeRemote then
-            warn("[Titan Hub] missing remote: runPrestigeTower")
+            warn("[KhawpunHub] missing remote: runPrestigeTower")
             pcall(function() Rayfield:Notify({ Title = "Missing remote", Content = "runPrestigeTower", Duration = 6 }) end)
         end
     end)
@@ -7426,4 +7462,4 @@ Rayfield:LoadConfiguration()
 -- queue the script for the next server change right away (needs the Raw Script URL from the config)
 task.delay(3, queueReload)
 
-Rayfield:Notify({ Title = "Titan Hub", Content = "Loaded", Duration = 3 })
+Rayfield:Notify({ Title = "KhawpunHub", Content = "Loaded", Duration = 3 })
