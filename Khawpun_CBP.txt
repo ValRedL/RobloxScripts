@@ -736,18 +736,6 @@ local isSwitchingMode = false
 local WorldOrder = {"1", "2", "3", "4", "5", "6", "8"}
 local AllWorldsAndRaid = {"1", "2", "3", "4", "5", "6", "8", "raid", "shadow", "halloween"}
 
--- Shadows Garden specific settings (UPD 3)
-local ShadowDifficultyLadder = true
-local ShadowSingleDiff = "Normal"
-local ShadowMaxDiff = "Nightmare"
-local SelectedShadowBosses = {
-    the_eminence = true,
-    gardens_first_blade = true,
-    golden_fox_shadow = true,
-    feral_hound = true,
-    slime_virtuoso = true,
-}
-
 -- Raid-specific settings
 local RaidWalkMode = true
 local FarmWalk = "remote"     -- movement style: "remote" = fight from anywhere, "remote_world" = teleport to world only then fight from far, false = teleport to boss, true = walk, "hybrid" = walk then teleport
@@ -2518,6 +2506,19 @@ RaidTab:CreateDropdown({
     end,
 })
 
+do -- Keep feature locals out of the main chunk register budget.
+-- Shadows Garden specific settings (UPD 3)
+local ShadowDifficultyLadder = true
+local ShadowSingleDiff = "Normal"
+local ShadowMaxDiff = "Nightmare"
+local SelectedShadowBosses = {
+    the_eminence = true,
+    gardens_first_blade = true,
+    golden_fox_shadow = true,
+    feral_hound = true,
+    slime_virtuoso = true,
+}
+
 -- ==================== Shadows Garden Raid tab (UPD 3) ====================
 local ShadowTab = Window:CreateTab("Shadows Garden", 4483362458)
 
@@ -2618,6 +2619,8 @@ ShadowTab:CreateButton({
         end
     end,
 })
+
+end
 
 -- ==================== Server & Rejoin tab ====================
 Rayfield.AfterSettings = function()
@@ -2923,6 +2926,7 @@ end
 
 -- ==================== Roll & Tower tab ====================
 local RollTab = Window:CreateTab("Roll & Tower", 4483362458)
+do -- Keep feature locals out of the main chunk register budget.
 RollTab:CreateSection("Fast Roll & Equip (UPD 3)")
 
 local FastRollEnabled = false
@@ -2978,6 +2982,8 @@ RollTab:CreateToggle({
         end
     end,
 })
+
+end
 
 RollTab:CreateSection("Roll & Tower")
 RollTab:CreateButton({ Name = "Toggle Auto Roll", Callback = function() if autoRollRemote then autoRollRemote:FireServer() end end })
@@ -4702,6 +4708,7 @@ do
     })
 end
 
+do -- Keep feature locals out of the main chunk register budget.
 -- ==================== Card Fusion tab (UPD 3) ====================
 local FusionTab = Window:CreateTab("Card Fusion", 4483362458)
 
@@ -4763,6 +4770,9 @@ FusionTab:CreateButton({
     end,
 })
 
+end
+
+do -- Keep feature locals out of the main chunk register budget.
 -- ==================== Card Mutations tab (UPD 3) ====================
 local MutationTab = Window:CreateTab("Card Mutations", 4483362458)
 
@@ -4818,6 +4828,8 @@ MutationTab:CreateButton({
         end
     end,
 })
+
+end
 
 -- ==================== Codes, daily login, group chest ====================
 -- codes:  settingChange:FireServer("redeemCode", code)           (handleUIClient: the code box)
