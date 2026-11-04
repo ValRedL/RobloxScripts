@@ -1,87 +1,6 @@
-local TitanBoot = {stage = "Waiting for player", started = os.clock(), done = false}
-do
-    local players = game:GetService("Players")
-    local deadline = os.clock() + 30
-    while not players.LocalPlayer and os.clock() < deadline do task.wait(0.1) end
-    local player = players.LocalPlayer
-    assert(player, "KhawpunHub: LocalPlayer unavailable after 30 seconds")
-    local parent = player:WaitForChild("PlayerGui", 30)
-    assert(parent, "KhawpunHub: PlayerGui unavailable after 30 seconds")
-    local previous = parent:FindFirstChild("KhawpunMobileStartup")
-    if previous then previous:Destroy() end
-    local gui = Instance.new("ScreenGui")
-    gui.Name = "KhawpunMobileStartup"
-    gui.ResetOnSpawn = false
-    gui.DisplayOrder = 100000
-    gui.Parent = parent
-    local panel = Instance.new("Frame")
-    panel.Size = UDim2.new(0.9, 0, 0, 210)
-    panel.Position = UDim2.new(0.05, 0, 0.08, 0)
-    panel.BackgroundColor3 = Color3.fromRGB(24, 25, 34)
-    panel.Parent = gui
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -24, 1, -50)
-    label.Position = UDim2.new(0, 12, 0, 8)
-    label.BackgroundTransparency = 1
-    label.TextColor3 = Color3.fromRGB(235, 235, 245)
-    label.Font = Enum.Font.SourceSans
-    label.TextSize = 16
-    label.TextWrapped = true
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.TextYAlignment = Enum.TextYAlignment.Top
-    label.Parent = panel
-    local close = Instance.new("TextButton")
-    close.Size = UDim2.new(0, 100, 0, 30)
-    close.Position = UDim2.new(1, -112, 1, -38)
-    close.Text = "Hide status"
-    close.Parent = panel
-    close.Activated:Connect(function() gui.Enabled = false end)
-    TitanBoot.gui = gui
-    TitanBoot.label = label
-end
-
-function TitanBoot:set(stage)
-    self.stage = stage
-    self.started = os.clock()
-    if self.label.Parent then self.label.Text = "KhawpunHub mobile startup\n" .. stage end
-    print("[Khawpun startup] " .. stage)
-end
-
-function TitanBoot:load(url, name)
-    self:set("Downloading " .. name)
-    local ok, source = pcall(function() return game:HttpGet(url) end)
-    if not ok then error(name .. " download failed: " .. tostring(source), 0) end
-    if type(source) ~= "string" or source == "" then error(name .. " download was empty", 0) end
-    self:set("Compiling " .. name)
-    if type(loadstring) ~= "function" then error("loadstring is unavailable", 0) end
-    local chunk, compileError = loadstring(source, "@" .. name)
-    if not chunk then error(name .. " compile failed: " .. tostring(compileError), 0) end
-    self:set("Starting " .. name)
-    local ran, result = pcall(chunk)
-    if not ran then error(name .. " startup failed: " .. tostring(result), 0) end
-    if type(result) ~= "table" then error(name .. " returned no library table", 0) end
-    return result
-end
-
-TitanBoot:set("Starting script")
-task.spawn(function()
-    while not TitanBoot.done and TitanBoot.gui.Parent do
-        task.wait(1)
-        if not TitanBoot.done and os.clock() - TitanBoot.started > 10 and TitanBoot.label.Parent then
-            TitanBoot.label.Text = "KhawpunHub mobile startup\nWaiting: " .. TitanBoot.stage
-                .. "\n" .. tostring(math.floor(os.clock() - TitanBoot.started)) .. " seconds"
-        end
-    end
-end)
-
-local TitanBootOK, TitanBootError = xpcall(function()
 -- Early start: only needs LocalPlayer (NOT the map / game.Loaded)
 local Players = game:GetService("Players")
 while not Players.LocalPlayer do task.wait() end
-
-if type(getgenv) ~= "function" then
-    error("getgenv is unavailable in this runner", 0)
-end
 
 -- Clean up any previous instance first
 if getgenv().TitanLoaded then
@@ -92,18 +11,9 @@ end
 -- Uses deividcomsono/Obsidian (modern successor to LinoriaLib with search, icons, mobile support & themes)
 local OBSIDIAN_REF = "main"
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/" .. OBSIDIAN_REF .. "/"
-local Library = TitanBoot:load(repo .. "Library.lua", "Library")
-local ThemeManager = TitanBoot:load(repo .. "addons/ThemeManager.lua", "ThemeManager")
-local SaveManager = TitanBoot:load(repo .. "addons/SaveManager.lua", "SaveManager")
-do
-    local input = game:GetService("UserInputService")
-    if input.TouchEnabled and not input.KeyboardEnabled then
-        Library.IsMobile = true
-        Library.OriginalMinSize = Vector2.new(240, 180)
-        Library.MinSize = Vector2.new(240, 180)
-    end
-end
-TitanBoot:set("Preparing menu")
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
 local LOptions, LToggles = Library.Options, Library.Toggles
 
 Library.ForceCheckbox = false
@@ -367,7 +277,8 @@ local function fillGroups()
     end
 end
 
-local IS_MOBILE = Library.IsMobile == true
+local UIS_Check = game:GetService("UserInputService")
+local IS_MOBILE = (Library.IsMobile == true) or UIS_Check.TouchEnabled or (UIS_Check:GetPlatform() == Enum.Platform.Android or UIS_Check:GetPlatform() == Enum.Platform.IOS)
 
 GroupOf.__headers = {}
 function GroupOf.__addHeaders(tabsFrame)
@@ -418,32 +329,33 @@ local function addPage(name)
 end
 
 function Rayfield:CreateWindow(cfg)
-    TitanBoot:set("Waiting for camera layout")
-    do
-        local deadline = os.clock() + 10
-        while os.clock() < deadline do
-            local camera = workspace.CurrentCamera
-            if camera and camera.ViewportSize.X > 100 and camera.ViewportSize.Y > 100 then break end
-            task.wait(0.1)
+    local cam = workspace.CurrentCamera
+    local vp = cam and cam.ViewportSize or Vector2.new(1280, 720)
+    if vp.X <= 200 or vp.Y <= 200 then
+        local t0 = os.clock()
+        while cam and (cam.ViewportSize.X <= 200 or cam.ViewportSize.Y <= 200) and os.clock() - t0 < 3 do
+            task.wait(0.2)
         end
+        vp = (cam and cam.ViewportSize.X > 200) and cam.ViewportSize or Vector2.new(1280, 720)
     end
-    local vp = (workspace.CurrentCamera and workspace.CurrentCamera.ViewportSize) or Vector2.new(1280, 720)
-    local winW
+
+    local winW, winH
     if IS_MOBILE then
-        -- phones: fill most of the (landscape) screen, icons-only sidebar
-        winW = math.floor(math.clamp(vp.X - 24, 240, 680))
-        WIN_H = math.floor(math.clamp(vp.Y - 24, 180, 400))
+        -- phones: safe clamped dimensions so negative/zero sizes never occur
+        winW = math.clamp(math.floor(vp.X - 20), 380, 640)
+        winH = math.clamp(math.floor(vp.Y - 20), 260, 390)
     else
-        winW = math.floor(math.min(780, vp.X - 80))
-        WIN_H = math.floor(math.min(540, vp.Y - 80))
+        winW = math.clamp(math.floor(vp.X - 80), 540, 780)
+        winH = math.clamp(math.floor(vp.Y - 80), 380, 540)
     end
-    TitanBoot:set("Creating Obsidian window")
+    WIN_H = winH
+
     LWindow = Library:CreateWindow({
         Title = cfg.Name,
         Footer = "KhawpunHub (UPD 3)  •  Card Battles: Prestige",
         Center = true,
         AutoShow = true,
-        Resizable = true,
+        Resizable = not IS_MOBILE,
         ShowCustomCursor = false,
         NotifySide = "Right",
         TabPadding = 8,
@@ -460,10 +372,18 @@ function Rayfield:CreateWindow(cfg)
         TabSwipeFrom = "bottom",
         TabButtonsStyle = { Gap = 4, Padding = 6, CornerRadius = 8, Indicator = true, IndicatorWidth = 3, IndicatorHeight = 18 },
     })
-    TitanBoot:set("Window created; building tabs")
+    -- On mobile executors (Delta, Codex, Arceus X), ensure ScreenGui is parented to PlayerGui so it renders
+    task.spawn(function()
+        if Library.ScreenGui then
+            local pg = player:WaitForChild("PlayerGui", 10)
+            if pg and (IS_MOBILE or not Library.ScreenGui.Parent) then
+                pcall(function() Library.ScreenGui.Parent = pg end)
+            end
+        end
+    end)
+
     local win = {}
     function win:CreateTab(name)
-        TitanBoot:set("Building tab: " .. tostring(name))
         local g = GroupOf[name]
         -- fall back to plain tabs if this build has no Tabbox support
         if g and not (Library.CreateWindow and LWindow.AddTab) then g = nil end
@@ -531,7 +451,6 @@ function Rayfield:Destroy()
 end
 
 function Rayfield:LoadConfiguration()
-    TitanBoot:set("Loading settings and themes")
     local settings = addPage("UI Settings")
     if Rayfield.AfterSettings then
         local ok, err = pcall(Rayfield.AfterSettings)
@@ -2048,15 +1967,19 @@ do
     end))
 
     local parent
-    if gethui then
-        local ok, h = pcall(gethui)
-        if ok then parent = h end
+    if IS_MOBILE then
+        parent = player:WaitForChild("PlayerGui", 10)
+    else
+        if gethui then
+            local ok, h = pcall(gethui)
+            if ok then parent = h end
+        end
+        if not parent then
+            local ok = pcall(function() gui.Parent = game:GetService("CoreGui") end)
+            if ok and gui.Parent then parent = gui.Parent end
+        end
     end
-    if not parent then
-        local ok = pcall(function() gui.Parent = game:GetService("CoreGui") end)
-        if ok and gui.Parent then parent = gui.Parent end
-    end
-    gui.Parent = parent or player:WaitForChild("PlayerGui")
+    gui.Parent = parent or player:WaitForChild("PlayerGui", 10)
 
     -- tap = show/hide the menu, drag = move the button
     local dragging, dragStart, startPos, moved = false, nil, nil, false
@@ -2069,7 +1992,9 @@ do
     table.insert(activeConnections, UIS.InputChanged:Connect(function(input)
         if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
             local d = input.Position - dragStart
-            if d.Magnitude > 6 then moved = true end
+            -- Use 16 pixels threshold for mobile touch to avoid finger jitter counting as drag
+            local threshold = (input.UserInputType == Enum.UserInputType.Touch) and 16 or 6
+            if d.Magnitude > threshold then moved = true end
             if moved then
                 btn.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
                 offBtn.Position = btn.Position + UDim2.fromOffset(52, 0)
@@ -2080,11 +2005,14 @@ do
         if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch) then
             dragging = false
             if not moved then
-                local ok = pcall(function() Library:Toggle() end)
-                if not ok and Library.ToggleKeybind then
-                    warn("[KhawpunHub] Library:Toggle() unavailable")
-                end
+                pcall(function() Library:Toggle() end)
             end
+        end
+    end))
+    -- Direct fallback tap event for mobile touch compatibility
+    table.insert(activeConnections, btn.Activated:Connect(function()
+        if not moved then
+            pcall(function() Library:Toggle() end)
         end
     end))
     table.insert(activeConnections, { Disconnect = function() pcall(function() gui:Destroy() end) end })
@@ -7566,18 +7494,3 @@ Rayfield:LoadConfiguration()
 task.delay(3, queueReload)
 
 Rayfield:Notify({ Title = "KhawpunHub", Content = "Loaded", Duration = 3 })
-end, function(err)
-    return tostring(err)
-end)
-TitanBoot.done = true
-if TitanBootOK then
-    TitanBoot:set("Loaded successfully")
-    task.delay(3, function() if TitanBoot.gui.Parent then TitanBoot.gui:Destroy() end end)
-else
-    warn("[Khawpun startup] " .. tostring(TitanBootError))
-    if TitanBoot.gui.Parent then
-        TitanBoot.gui.Enabled = true
-        TitanBoot.label.TextColor3 = Color3.fromRGB(255, 160, 160)
-        TitanBoot.label.Text = "KhawpunHub stopped at: " .. TitanBoot.stage .. "\n" .. tostring(TitanBootError)
-    end
-end
