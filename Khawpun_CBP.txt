@@ -2199,7 +2199,7 @@ end
 
 local function worldHasWork(worldKey, bossFilter)
     for _, diff in ipairs(diffsToRun()) do
-        for _, boss in ipairs(BossHierarchy[worldKey]) do
+        for _, boss in ipairs(BossHierarchy[worldKey] or {}) do
             if not bossFilter or bossFilter[boss] then
                 local s = SkipUntil[boss .. "|" .. diff]
                 if not s or os.clock() >= s then return true end
@@ -2212,7 +2212,7 @@ end
 local function farmWorldOnce(worldKey, alive, bossFilter, useWalk)
     local didAny = false
     for _, diff in ipairs(diffsToRun()) do
-        for _, boss in ipairs(BossHierarchy[worldKey]) do
+        for _, boss in ipairs(BossHierarchy[worldKey] or {}) do
             if not alive() then return didAny end
             if not bossFilter or bossFilter[boss] then
                 if attemptBoss(boss, diff, alive, worldKey, useWalk) then didAny = true end
@@ -2576,7 +2576,7 @@ end
 
 local function customWorldHasWork(worldKey)
     for _, diff in ipairs(DiffList) do
-        for _, boss in ipairs(BossHierarchy[worldKey]) do
+        for _, boss in ipairs(BossHierarchy[worldKey] or {}) do
             if BossDiffs[boss] and BossDiffs[boss][diff] then
                 local s = SkipUntil[boss .. "|" .. diff]
                 if not s or os.clock() >= s then return true end
@@ -2590,7 +2590,7 @@ local function customFarmWorldOnce(worldKey, alive)
     local didAny = false
     local useWalk = FarmWalk
     for _, diff in ipairs(DiffList) do
-        for _, boss in ipairs(BossHierarchy[worldKey]) do
+        for _, boss in ipairs(BossHierarchy[worldKey] or {}) do
             if not alive() then return didAny end
             if BossDiffs[boss] and BossDiffs[boss][diff] then
                 if attemptBoss(boss, diff, alive, worldKey, useWalk) then didAny = true end
@@ -2625,7 +2625,7 @@ local function runCustomBossFarm()
     end)
 end
 
-local WorldShort = { ["1"] = "SHI", ["2"] = "LEAF", ["3"] = "INF", ["4"] = "MAR", ["5"] = "SHIB", ["6"] = "HUECO", ["raid"] = "RAID", ["halloween"] = "HW" }
+local WorldShort = { ["1"] = "SHI", ["2"] = "LEAF", ["3"] = "INF", ["4"] = "MAR", ["5"] = "SHIB", ["6"] = "HUECO", ["8"] = "SHADOW", ["shadow"] = "SHADOW", ["raid"] = "RAID", ["halloween"] = "HW" }
 
 local function titleCase(id)
     local t = id:gsub("_", " ")
@@ -2635,8 +2635,8 @@ end
 
 local BossLabels, LabelToBoss = {}, {}
 for _, worldKey in ipairs(AllWorldsAndRaid) do
-    for _, boss in ipairs(BossHierarchy[worldKey]) do
-        local label = WorldShort[worldKey] .. " - " .. (BossDisplayName[boss] or titleCase(boss))
+    for _, boss in ipairs(BossHierarchy[worldKey] or {}) do
+        local label = (WorldShort[worldKey] or ("W" .. tostring(worldKey))) .. " - " .. (BossDisplayName[boss] or titleCase(boss))
         table.insert(BossLabels, label)
         LabelToBoss[label] = boss
     end
@@ -2755,7 +2755,7 @@ do
                 worlds = { qsLabelToKey[qsWorld] }
             end
             for _, worldKey in ipairs(worlds) do
-                for _, boss in ipairs(BossHierarchy[worldKey]) do
+                for _, boss in ipairs(BossHierarchy[worldKey] or {}) do
                     local set = {}
                     if qsLevel ~= "Clear" then
                         for _, d in ipairs(DiffList) do
