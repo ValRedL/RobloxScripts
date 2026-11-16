@@ -1,11 +1,11 @@
 -- =====================================================================
--- Anime Card Battles - Premium Auto Farm & Endgame Script (UPD 2 Edition)
+-- Anime Card Battles - Premium Auto Farm & Endgame Script (UPD 4 Edition)
 -- Features: 
---   1. ⚡ Multi-Battle Dual System:
---      - Slot 1: Dedicated Endless Tower (Hardcore / Infinite / Potion)
---      - Slot 2: Priority Rotator (Story Cycle/Secret Boss <-> Rifts)
---   2. 📖 Story: All Worlds + Toy Kingdom (Customizable Stage Selector,
---               Cycle All Mobs on Nightmare + Auto Secret Boss on 1h CD)
+--   1. ⚡ Multi-Battle 3-Slot System (Multi Battle + Third Battle Seal):
+--      - Slot 1: Dedicated Endless Tower (Hardcore / Infinite / Potion / Halloween)
+--      - Slot 2: Priority Rotator (Secret Bosses -> Clover Capital / Toy Kingdom / Purple Town <-> Rifts)
+--      - Slot 3: 2nd Tower / Dedicated Rifts / Auto Dungeon / Raids & World Boss
+--   2. 📖 Story: All Worlds + Clover Capital (Nightmare) + Clover Throne Room (Time Sage King)
 --   3. 🌀 Rifts: Wild Frontier Auto Enter, Boss 1..5 Auto Progress, Live Shards
 --   4. 🗼 Standalone Tower Farm
 --   5. 🏆 Endgame Hybrid Loop
@@ -46,6 +46,13 @@ local RiftConfig = require(ReplicatedStorage.Shared.Rifts.RiftConfig)
 local MultiBattle = require(ReplicatedStorage.Shared.Battle.MultiBattle)
 
 -- Remotes
+local function TryGetRemoteFunction(remoteName)
+    if typeof(remoteName) ~= "string" or remoteName == "" then return nil end
+    local ok, remote = pcall(Remotes.GetFunction, remoteName)
+    if ok then return remote end
+    return nil
+end
+
 local RemoteStoryFight = Remotes.GetFunction(Remotes.StoryFight)
 local RemoteTowerAction = Remotes.GetFunction(Remotes.TowerAction)
 local RemoteEquipBest = Remotes.GetFunction(Remotes.EquipBest)
@@ -53,6 +60,8 @@ local RemoteSetLoadout = Remotes.GetFunction(Remotes.SetLoadout)
 local RemoteRiftAction = Remotes.GetFunction(Remotes.RiftAction)
 local RemoteBattleAction = Remotes.GetFunction(Remotes.BattleAction)
 local RemoteTeleport = Remotes.GetFunction(Remotes.Teleport)
+local RemoteDungeonAction = TryGetRemoteFunction(Remotes.DungeonAction)
+local RemoteRaidFight = TryGetRemoteFunction(Remotes.RaidFight)
 
 -- =====================================================================
 -- SAFE PLATFORM ADAPTERS (Crash-Proof Mobile & PC Support)
@@ -168,6 +177,13 @@ local Settings = {
     MultiSlot2RiftTeam = 3,
     MultiSlot2RiftAutoRepeat = true,
 
+    -- Slot 3: Third Battle Seal Runner (UPD 4)
+    MultiSlot3Enabled = false,
+    MultiSlot3Mode = "2nd Tower", -- "2nd Tower", "Rifts (Dedicated)", "Auto Dungeon", "Destroyer Cat Raid", "Dracula Raid", "World Boss"
+    MultiSlot3Tower = "Infinite",
+    MultiSlot3Team = 3,
+    MultiSlot3Restart = true,
+
     -- =========================================================
     -- 📖 STORY FARM SETTINGS (Customizable & Flexible)
     -- =========================================================
@@ -178,9 +194,15 @@ local Settings = {
     StoryCycleMode = "Cycle All Selected", -- "Cycle All Selected", "Single Stage"
     SelectedStage = "toy_kingdom_1",
     StorySecretBoss = true, -- Priority fight Secret Boss (Ruffy 4) whenever off cooldown!
+    StoryCloverSecretBoss = true, -- Priority fight Clover Throne Room (Time Sage King) whenever off cooldown!
     
-    -- Checkboxes for stages to cycle (Default: all Toy Kingdom stages enabled!)
+    -- Checkboxes for stages to cycle (Default: Clover Capital + Toy Kingdom + all maps enabled!)
     StorySelectedStages = {
+        ["clover_capital_1"] = true,
+        ["clover_capital_2"] = true,
+        ["clover_capital_3"] = true,
+        ["clover_capital_4"] = true,
+        ["clover_capital_boss"] = true,
         ["toy_kingdom_1"] = true,
         ["toy_kingdom_2"] = true,
         ["toy_kingdom_3"] = true,
@@ -228,6 +250,9 @@ local Settings = {
     EndgameDifficulty = "Nightmare",
     EndgameTower = "Hardcore",
     EndgameTargets = {
+        ["clover_capital_boss"] = true,
+        ["clover_capital_4"] = false,
+        ["clover_capital_secret"] = true,
         ["toy_kingdom_boss"] = true,
         ["toy_kingdom_3"] = false,
         ["toy_kingdom_secret"] = true,
@@ -250,6 +275,19 @@ local Settings = {
 
 -- Worlds and Stages Map
 local WorldsList = {
+    { 
+        Id = "clover_capital", 
+        Name = "Clover Capital", 
+        Stages = {"clover_capital_1", "clover_capital_2", "clover_capital_3", "clover_capital_4", "clover_capital_boss", "clover_capital_secret"},
+        StageNames = {
+            clover_capital_1 = "Stage 1: Mirror Brother",
+            clover_capital_2 = "Stage 2: Thorn Queen",
+            clover_capital_3 = "Stage 3: Ash Trickster",
+            clover_capital_4 = "Stage 4: Flame Lioness",
+            clover_capital_boss = "Boss: Body Devil",
+            clover_capital_secret = "Secret: Time Sage King (Throne Room)",
+        }
+    },
     { 
         Id = "toy_kingdom", 
         Name = "Toy Kingdom", 
@@ -309,8 +347,12 @@ local WorldsList = {
 }
 
 local WorldMapLookup = {}
+local WorldNameToId = {}
+local WorldDropdownOptions = {}
 for _, w in ipairs(WorldsList) do
     WorldMapLookup[w.Id] = w
+    WorldNameToId[w.Name] = w.Id
+    table.insert(WorldDropdownOptions, w.Name)
 end
 
 local RiftBosses = {
@@ -355,6 +397,12 @@ local RiftBossOptions = {
     "Boss 5: Funny President"
 }
 local RiftProgressOptions = {"Auto Progress (1 -> 5)", "Specific Boss"}
+local Slot3Modes = {"2nd Tower", "Rifts (Dedicated)", "Auto Dungeon", "Destroyer Cat Raid", "Dracula Raid", "World Boss"}
+local Slot3RaidMap = {
+    ["Destroyer Cat Raid"] = { id = "beerus", mode = MultiBattle.RaidMode("beerus") },
+    ["Dracula Raid"] = { id = "dracula", mode = MultiBattle.RaidMode("dracula") },
+    ["World Boss"] = { id = "broly", mode = MultiBattle.RaidMode("broly") },
+}
 
 -- Status Tracker
 local StatusText = "Idle"
@@ -401,10 +449,27 @@ local function NormalizeSlot2Settings()
         if not number or number ~= number then return fallback end
         return math.clamp(math.floor(number), 1, 5)
     end
+    local function teamNum(value, fallback)
+        local number = tonumber(value)
+        if not number or number ~= number then return fallback end
+        return math.clamp(math.floor(number), 1, 3)
+    end
     Settings.MultiSlot2RiftRepeatBoss = boss(Settings.MultiSlot2RiftRepeatBoss, 4)
     Settings.MultiSlot2RiftBoss = boss(Settings.MultiSlot2RiftBoss, 1)
     if typeof(Settings.MultiSlot2SmartCycle) ~= "boolean" then Settings.MultiSlot2SmartCycle = true end
     if typeof(Settings.MultiSlot2ReturnStory) ~= "boolean" then Settings.MultiSlot2ReturnStory = true end
+    if typeof(Settings.StoryCloverSecretBoss) ~= "boolean" then Settings.StoryCloverSecretBoss = true end
+    if typeof(Settings.MultiSlot3Enabled) ~= "boolean" then Settings.MultiSlot3Enabled = false end
+    if not table.find(Slot3Modes, Settings.MultiSlot3Mode) then Settings.MultiSlot3Mode = "2nd Tower" end
+    if not table.find(Slot1Towers, Settings.MultiSlot3Tower) then Settings.MultiSlot3Tower = "Infinite" end
+    Settings.MultiSlot3Team = teamNum(Settings.MultiSlot3Team, 3)
+    if typeof(Settings.MultiSlot3Restart) ~= "boolean" then Settings.MultiSlot3Restart = true end
+    if typeof(Settings.StorySelectedStages) ~= "table" then Settings.StorySelectedStages = {} end
+    for _, cloverStageId in ipairs({"clover_capital_1", "clover_capital_2", "clover_capital_3", "clover_capital_4", "clover_capital_boss"}) do
+        if typeof(Settings.StorySelectedStages[cloverStageId]) ~= "boolean" then
+            Settings.StorySelectedStages[cloverStageId] = true
+        end
+    end
 end
 
 local function SaveConfig()
@@ -471,13 +536,15 @@ end
 -- =====================================================================
 
 local LastTeamSwitch = 0
+local LastTeamSwitchTarget = nil
 local function SwitchTeam(targetTeam)
     local state = GetSafeState()
     local current = state and state.ActiveLoadout
     if current ~= targetTeam then
         local now = os.clock()
-        if now - LastTeamSwitch > 2.0 then
+        if targetTeam ~= LastTeamSwitchTarget or (now - LastTeamSwitch > 2.0) then
             LastTeamSwitch = now
+            LastTeamSwitchTarget = targetTeam
             SetStatus(string.format("Switching to Team %d...", targetTeam))
             pcall(function()
                 StateController:SetLoadout(targetTeam)
@@ -485,6 +552,24 @@ local function SwitchTeam(targetTeam)
             task.wait(0.4)
         end
     end
+end
+
+local ActionLockBusy = false
+local function WithActionLock(fn)
+    local deadline = os.clock() + 8
+    while ActionLockBusy and os.clock() < deadline do
+        task.wait(0.1)
+    end
+    if ActionLockBusy then
+        return false, "Action lock busy"
+    end
+    ActionLockBusy = true
+    local ok, r1, r2, r3 = pcall(fn)
+    ActionLockBusy = false
+    if not ok then
+        return false, r1
+    end
+    return true, r1, r2, r3
 end
 
 local LastAutoBattleCheck = 0
@@ -510,10 +595,11 @@ local function EquipBestCards()
     end)
 end
 
--- MultiBattle Background Inspection
-local function GetBgBattle()
-    local attr = LocalPlayer:GetAttribute(MultiBattle.ATTRIBUTE)
-    if typeof(attr) == "string" and attr ~= "" then
+-- MultiBattle 3-Slot Background & Foreground Inspection
+local function DecodeBgAttr(attrName)
+    if typeof(attrName) ~= "string" or attrName == "" then return nil end
+    local okAttr, attr = pcall(function() return LocalPlayer:GetAttribute(attrName) end)
+    if okAttr and typeof(attr) == "string" and attr ~= "" then
         local ok, data = pcall(HttpService.JSONDecode, HttpService, attr)
         if ok and typeof(data) == "table" and data.side ~= "over" then
             return data
@@ -522,26 +608,124 @@ local function GetBgBattle()
     return nil
 end
 
-local function IsTowerBattleActive()
-    if BattleController.IsActive() and BattleController.IsTower() then
+local function GetBgBattle()
+    return DecodeBgAttr(MultiBattle.ATTRIBUTE or "MultiBattle")
+end
+
+local function GetBgBattle3()
+    return DecodeBgAttr(MultiBattle.ATTRIBUTE3 or "MultiBattle3")
+end
+
+local function GetAllBgBattles()
+    local list = {}
+    local b2 = GetBgBattle()
+    if b2 then table.insert(list, b2) end
+    local b3 = GetBgBattle3()
+    if b3 then table.insert(list, b3) end
+    return list
+end
+
+local function GetBgMode(bg)
+    if typeof(bg) ~= "table" then return nil end
+    if typeof(bg.mode) == "string" and bg.mode ~= "" then return bg.mode end
+    if typeof(bg.tower) == "string" and bg.tower ~= "" then
+        if MultiBattle.TowerMode then return MultiBattle.TowerMode(bg.tower) end
+        return "tower:" .. bg.tower
+    end
+    return nil
+end
+
+local function GetForegroundMode()
+    local okActive, active = pcall(function() return BattleController.IsActive() end)
+    if not okActive or not active then return nil end
+    local okShown, shown = pcall(function() return BattleController.ShownMode and BattleController.ShownMode() end)
+    if okShown and typeof(shown) == "string" and shown ~= "" then return shown end
+    local okHidden, hidden = pcall(function() return BattleController.HiddenMode and BattleController.HiddenMode() end)
+    if okHidden and typeof(hidden) == "string" and hidden ~= "" then return hidden end
+    local okTower, isTower = pcall(function() return BattleController.IsTower and BattleController.IsTower() end)
+    if okTower and isTower then return "tower" end
+    return "other"
+end
+
+local function IsModeBattleActive(targetMode)
+    if typeof(targetMode) ~= "string" or targetMode == "" then return false end
+    if GetForegroundMode() == targetMode then
         return true
     end
-    local bg = GetBgBattle()
-    if bg and MultiBattle.IsTower(bg.mode) then
+    for _, bg in ipairs(GetAllBgBattles()) do
+        if GetBgMode(bg) == targetMode then
+            return true
+        end
+    end
+    return false
+end
+
+local function GetTowerBackgroundWaitId()
+    local okMod, towerCtrl = pcall(function() return require(Client.Controllers.TowerController) end)
+    if not okMod or typeof(towerCtrl) ~= "table" or typeof(towerCtrl.BackgroundWait) ~= "function" then
+        return nil
+    end
+    local okWait, waitInfo = pcall(towerCtrl.BackgroundWait)
+    if okWait and typeof(waitInfo) == "table" and typeof(waitInfo.id) == "string" then
+        return waitInfo.id
+    end
+    return nil
+end
+
+local function IsTowerBattleActive(specificTowerId)
+    local fgMode = GetForegroundMode()
+    local expectedMode = specificTowerId and (MultiBattle.TowerMode and MultiBattle.TowerMode(specificTowerId) or ("tower:" .. specificTowerId)) or nil
+
+    if fgMode then
+        local okIsTower, fgIsTower = pcall(function() return BattleController.IsTower() end)
+        if not specificTowerId then
+            if (okIsTower and fgIsTower) or MultiBattle.IsTower(fgMode) then
+                return true
+            end
+        else
+            if fgMode == expectedMode or (fgMode == "tower" and okIsTower and fgIsTower) then
+                return true
+            end
+        end
+    end
+
+    for _, bg in ipairs(GetAllBgBattles()) do
+        local bgMode = GetBgMode(bg)
+        if not specificTowerId then
+            if MultiBattle.IsTower(bgMode) then
+                return true
+            end
+        elseif bgMode == expectedMode or bg.tower == specificTowerId then
+            return true
+        end
+    end
+
+    local bwId = GetTowerBackgroundWaitId()
+    if bwId and (not specificTowerId or bwId == specificTowerId) then
+        return true
+    end
+
+    return false
+end
+
+local function IsStoryBattleActive()
+    if IsModeBattleActive("story") then return true end
+    local fgMode = GetForegroundMode()
+    if fgMode == "other" and not BattleController.ShownMode then
         return true
     end
     return false
 end
 
+local function IsRiftBattleActive()
+    return IsModeBattleActive("rift")
+end
+
 local function IsRotatorBattleActive()
-    if BattleController.IsActive() and not BattleController.IsTower() then
-        return true
+    if Settings.MultiSlot3Enabled and Settings.MultiSlot3Mode == "Rifts (Dedicated)" then
+        return IsStoryBattleActive()
     end
-    local bg = GetBgBattle()
-    if bg and not MultiBattle.IsTower(bg.mode) then
-        return true
-    end
-    return false
+    return IsStoryBattleActive() or IsRiftBattleActive()
 end
 
 -- =====================================================================
@@ -550,6 +734,22 @@ end
 
 local StoryCycleCursor = 1
 
+local function GetReadySecretBoss(state, now)
+    if Settings.StoryCloverSecretBoss and StoryTargetReady("clover_capital_secret") then
+        local cd = SafeStoryCooldown(state.StoryCooldowns, "clover_capital_secret", now)
+        if cd <= 0 then
+            return "clover_capital_secret", "Secret", "Clover Throne Room: Time Sage King"
+        end
+    end
+    if Settings.StorySecretBoss and StoryTargetReady("toy_kingdom_secret") then
+        local cd = SafeStoryCooldown(state.StoryCooldowns, "toy_kingdom_secret", now)
+        if cd <= 0 then
+            return "toy_kingdom_secret", "Secret", "Secret Boss: Ruffy 4"
+        end
+    end
+    return nil
+end
+
 local function GetNextStoryTarget(targetWorld, targetDiff, peek)
     local worldId = targetWorld or Settings.SelectedWorld
     local diff = targetDiff or Settings.SelectedDifficulty
@@ -557,13 +757,10 @@ local function GetNextStoryTarget(targetWorld, targetDiff, peek)
     local now = GetSafeTime()
     local worldData = WorldMapLookup[worldId] or WorldMapLookup["toy_kingdom"]
 
-    -- 1. HIGHEST PRIORITY: Secret Boss (Ruffy 4 in Toy Kingdom)
-    if Settings.StorySecretBoss and worldId == "toy_kingdom" and StoryTargetReady("toy_kingdom_secret") then
-        local secId = "toy_kingdom_secret"
-        local secCd = SafeStoryCooldown(state.StoryCooldowns, secId, now)
-        if secCd <= 0 then
-            return secId, "Secret", "Secret Boss: Ruffy 4"
-        end
+    -- 1. HIGHEST PRIORITY: Secret Bosses (Clover Throne Room + Toy Kingdom)
+    local secId, secDiff, secName = GetReadySecretBoss(state, now)
+    if secId then
+        return secId, secDiff, secName
     end
 
     -- 2. Single Stage Mode
@@ -607,13 +804,18 @@ local function GetNextStoryTarget(targetWorld, targetDiff, peek)
 end
 
 -- =====================================================================
--- ⚡ MULTI-BATTLE DUAL SYSTEM ENGINE
+-- ⚡ MULTI-BATTLE 3-SLOT ENGINE
 -- =====================================================================
 
 local MultiSlot2QuotaDone = 0
 
--- Custom Pipeline: Toy Kingdom 1..4 (Nightmare) -> Purple Town Boss (Nightmare) -> Rifts
+-- Custom Pipeline: Clover Capital 1..Boss (Nightmare) -> Toy Kingdom 1..Boss (Nightmare) -> Purple Town Boss (Nightmare) -> Rifts
 local CustomPipelineStages = {
+    { Id = "clover_capital_1", Diff = "Nightmare", Name = "Clover Capital 1 (Mirror Brother)" },
+    { Id = "clover_capital_2", Diff = "Nightmare", Name = "Clover Capital 2 (Thorn Queen)" },
+    { Id = "clover_capital_3", Diff = "Nightmare", Name = "Clover Capital 3 (Ash Trickster)" },
+    { Id = "clover_capital_4", Diff = "Nightmare", Name = "Clover Capital 4 (Flame Lioness)" },
+    { Id = "clover_capital_boss", Diff = "Nightmare", Name = "Clover Capital Boss (Body Devil)" },
     { Id = "toy_kingdom_1", Diff = "Nightmare", Name = "Toy Kingdom 1 (Barrier Pirate)" },
     { Id = "toy_kingdom_2", Diff = "Nightmare", Name = "Toy Kingdom 2 (Surgeon Pirate)" },
     { Id = "toy_kingdom_3", Diff = "Nightmare", Name = "Toy Kingdom 3 (Gravity Marine)" },
@@ -628,6 +830,138 @@ local function PickRiftBoss(beaten, progress, specific, repeatBoss)
         if not beaten[i] and not beaten[tostring(i)] then return i end
     end
     return repeatBoss
+end
+
+local function RunRiftSlotStep(opts)
+    if not opts.riftInside then
+        local res = RemoteRiftAction:InvokeServer("Enter")
+        local ok = res and res.ok
+        opts.setStatus(ok and "Entering Rift" or ("Rift entry failed: " .. tostring(res and res.reason)))
+        if not ok and opts.onEnterFailed then
+            opts.onEnterFailed()
+        end
+        return false, ok and 2.5 or 5
+    end
+
+    local progress = opts.useProgress
+    local beaten = {}
+    if progress then
+        local rs = RemoteRiftAction:InvokeServer("State")
+        if not rs or not rs.ok or typeof(rs.beaten) ~= "table" then
+            opts.setStatus("Rift status unavailable; retrying")
+            if opts.onStateFailed then
+                opts.onStateFailed()
+            end
+            return false, 5
+        end
+        beaten = rs.beaten
+    end
+
+    local boss = PickRiftBoss(beaten, progress, opts.specificBoss, opts.repeatBoss)
+    local fightRes = nil
+    local teamMissing = false
+    local lockOk, err = WithActionLock(function()
+        SwitchTeam(opts.team)
+        if GetSafeState().ActiveLoadout ~= opts.team then
+            teamMissing = true
+            opts.setStatus("Waiting for Team " .. tostring(opts.team))
+            return
+        end
+        if opts.autoRepeat ~= nil then
+            pcall(function()
+                SettingsController:Set("AutoRift", opts.autoRepeat)
+            end)
+        end
+        local bName = (RiftBosses[boss] and RiftBosses[boss].Name) or tostring(boss)
+        opts.setStatus(string.format("Rifts vs %s...", bName))
+        fightRes = RemoteRiftAction:InvokeServer("Fight", boss)
+    end)
+
+    if not lockOk then
+        opts.setStatus("Rift lock error: " .. tostring(err))
+        return false, 2
+    end
+    if teamMissing then
+        return false, 1
+    end
+    if fightRes and fightRes.ok then
+        EnsureAutoBattle()
+        return true, 2.5, boss
+    end
+    opts.setStatus("Rift fight failed: " .. tostring(fightRes and fightRes.reason))
+    return false, 3, boss
+end
+
+local ResolvedTowerCache = {}
+local function GetCachedTowerId(selected)
+    if selected ~= "Halloween Tower" then return selected end
+    return ResolvedTowerCache[selected]
+end
+
+local function RunTowerSlotStep(slotLabel, selectedTower, teamNumber, autoRestart, conflictTower, setSlotStatus)
+    local cached = GetCachedTowerId(selectedTower)
+    if cached and IsTowerBattleActive(cached) then
+        setSlotStatus(cached .. " active")
+        EnsureAutoBattle()
+        return 0.8
+    end
+
+    setSlotStatus(string.format("Checking %s Tower...", selectedTower))
+    local stateRes = RemoteTowerAction:InvokeServer("State")
+    if not stateRes or not stateRes.ok or not stateRes.state then
+        setSlotStatus("Tower state unavailable")
+        return 2
+    end
+
+    local resolved, resolveError = ResolveSlot1Tower(selectedTower, stateRes.state.towers)
+    if not resolved then
+        setSlotStatus(tostring(resolveError))
+        return 5
+    end
+    if selectedTower == "Halloween Tower" then
+        ResolvedTowerCache[selectedTower] = resolved
+    end
+
+    if conflictTower and resolved == conflictTower then
+        setSlotStatus("Conflict: same tower as Slot 1 (" .. tostring(resolved) .. ")")
+        return 5
+    end
+
+    if IsTowerBattleActive(resolved) then
+        setSlotStatus(resolved .. " active")
+        EnsureAutoBattle()
+        return 0.8
+    end
+
+    local towerState = stateRes.state.towers and stateRes.state.towers[resolved] or {}
+    local run = towerState.run
+    if not run and not autoRestart then
+        setSlotStatus(resolved .. " idle (Restart OFF)")
+        return 2
+    end
+
+    local actionName = run and "Resume" or "Start"
+    local actionVerb = run and "Resuming" or "Starting"
+    local actionRes = nil
+    local lockOk, err = WithActionLock(function()
+        pcall(function()
+            RemoteTowerAction:InvokeServer("SetDeck", resolved, teamNumber)
+        end)
+        SwitchTeam(teamNumber)
+        setSlotStatus(string.format("%s %s...", actionVerb, resolved))
+        actionRes = RemoteTowerAction:InvokeServer(actionName, resolved)
+    end)
+
+    if not lockOk then
+        setSlotStatus("Lock error: " .. tostring(err))
+        return 2
+    end
+    if actionRes and actionRes.ok then
+        EnsureAutoBattle()
+        return 2
+    end
+    setSlotStatus(tostring(actionRes and actionRes.reason or (actionName .. " failed")))
+    return 2.5
 end
 
 local function ChooseSmartAction(cycle, ready, secretReady, riftAvailable, returnStory)
@@ -652,9 +986,14 @@ end
 local SmartCycle = {storyPhase = true, index = 1, riftFought = false}
 local SmartNextAttempt = 0
 local SmartStatus = "Ready"
+local Slot1Status = "Standby"
+local Slot3Status = "Standby"
 local LastRiftAutoSetting = nil
 
 local function SyncSmartAutoRepeat()
+    if Settings.MultiSlot3Enabled and Settings.MultiSlot3Mode == "Rifts (Dedicated)" then
+        return true
+    end
     local desired = Settings.MultiSlot2RiftAutoRepeat
     if Settings.MultiSlot2SmartCycle then desired = false end
     if LastRiftAutoSetting ~= desired then
@@ -670,6 +1009,16 @@ local function SmartSetStatus(message)
     SetStatus("Slot 2: " .. message)
 end
 
+local function Slot1SetStatus(message)
+    Slot1Status = message
+    SetStatus("Slot 1: " .. message)
+end
+
+local function Slot3SetStatus(message)
+    Slot3Status = message
+    SetStatus("Slot 3: " .. message)
+end
+
 local function SmartTeamReady(team)
     SwitchTeam(team)
     if GetSafeState().ActiveLoadout ~= team then
@@ -683,20 +1032,34 @@ local function RunSmartSlot2(state, now, riftInside, riftAvailable)
     if os.clock() < SmartNextAttempt then return end
     local ready = {}
     for i, stage in ipairs(CustomPipelineStages) do
-        ready[i] = StoryTargetReady(stage.Id)
+        ready[i] = (Settings.StorySelectedStages[stage.Id] ~= false)
+            and StoryTargetReady(stage.Id)
             and SafeStoryCooldown(state.StoryCooldowns, stage.Id, now) <= 0
     end
-    local secretReady = Settings.StorySecretBoss and StoryTargetReady("toy_kingdom_secret")
-        and SafeStoryCooldown(state.StoryCooldowns, "toy_kingdom_secret", now) <= 0
+    local secId, secDiff, secName = GetReadySecretBoss(state, now)
+    local secretReady = secId ~= nil
     local action, index = ChooseSmartAction(SmartCycle, ready, secretReady,
         riftAvailable, Settings.MultiSlot2ReturnStory)
     if action == "secret" or action == "story" then
-        if not SmartTeamReady(Settings.StoryTeam) then return end
         local stage = action == "secret"
-            and {Id = "toy_kingdom_secret", Diff = "Secret", Name = "Secret Boss"}
+            and {Id = secId, Diff = secDiff, Name = secName}
             or CustomPipelineStages[index]
-        SmartSetStatus("Story: " .. stage.Name)
-        local res = TryStoryFight(stage.Id, stage.Diff)
+        local res = nil
+        local teamMissing = false
+        local lockOk, err = WithActionLock(function()
+            if not SmartTeamReady(Settings.StoryTeam) then
+                teamMissing = true
+                return
+            end
+            SmartSetStatus("Story: " .. stage.Name)
+            res = TryStoryFight(stage.Id, stage.Diff)
+        end)
+        if not lockOk then
+            SmartSetStatus("Story lock error: " .. tostring(err))
+            SmartNextAttempt = os.clock() + 2
+            return
+        end
+        if teamMissing then return end
         if action == "story" then
             SmartCycle.storyPhase = true
             SmartCycle.index = index + 1
@@ -710,39 +1073,24 @@ local function RunSmartSlot2(state, now, riftInside, riftAvailable)
         end
         SmartNextAttempt = os.clock() + 2.5
     elseif action == "rift" then
-        if not riftInside then
-            local res = RemoteRiftAction:InvokeServer("Enter")
-            if not res or not res.ok then SmartCycle.riftFought = true end
-            SmartSetStatus(res and res.ok and "Entering Rift"
-                or ("Rift entry failed: " .. tostring(res and res.reason)))
-            SmartNextAttempt = os.clock() + 5
-            return
-        end
-        local progress = Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)"
-        local beaten = {}
-        if progress then
-            local rs = RemoteRiftAction:InvokeServer("State")
-            if not rs or not rs.ok or typeof(rs.beaten) ~= "table" then
-                SmartCycle.riftFought = true
-                SmartSetStatus("Rift status unavailable; retrying")
-                SmartNextAttempt = os.clock() + 5
-                return
+        local ok, delaySec, boss = RunRiftSlotStep({
+            riftInside = riftInside,
+            team = Settings.MultiSlot2RiftTeam,
+            useProgress = Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)",
+            specificBoss = Settings.MultiSlot2RiftBoss,
+            repeatBoss = Settings.MultiSlot2RiftRepeatBoss,
+            autoRepeat = nil,
+            setStatus = SmartSetStatus,
+            onEnterFailed = function() SmartCycle.riftFought = true end,
+            onStateFailed = function() SmartCycle.riftFought = true end,
+        })
+        if boss then
+            SmartCycle.riftFought = true
+            if ok then
+                SmartSetStatus("Rift Boss " .. tostring(boss) .. "; checking Story after fight")
             end
-            beaten = rs.beaten
         end
-        local boss = PickRiftBoss(beaten, progress, Settings.MultiSlot2RiftBoss,
-            Settings.MultiSlot2RiftRepeatBoss)
-        if not SmartTeamReady(Settings.MultiSlot2RiftTeam) then return end
-        local res = RemoteRiftAction:InvokeServer("Fight", boss)
-        if res and res.ok then
-            SmartCycle.riftFought = true
-            SmartSetStatus("Rift Boss " .. tostring(boss) .. "; checking Story after fight")
-            EnsureAutoBattle()
-        else
-            SmartCycle.riftFought = true
-            SmartSetStatus("Rift fight failed: " .. tostring(res and res.reason))
-        end
-        SmartNextAttempt = os.clock() + 3
+        SmartNextAttempt = os.clock() + delaySec
     else
         SmartSetStatus("Waiting for Story cooldown / Rift entry")
         SmartNextAttempt = os.clock() + 2
@@ -754,50 +1102,26 @@ end
 task.spawn(function()
     while true do
         task.wait(0.8)
-        pcall(function()
+        local ok, err = pcall(function()
             if Settings.MultiBattleSystem and Settings.MultiSlot1Enabled then
-            if not IsTowerBattleActive() then
-                SwitchTeam(Settings.MultiSlot1Team)
-                local towerName = Settings.MultiSlot1Tower
-                SetStatus(string.format("Multi [Slot 1]: Checking %s Tower...", towerName))
-
-                local stateRes = RemoteTowerAction:InvokeServer("State")
-                if stateRes and stateRes.ok and stateRes.state then
-                    local resolved, resolveError = ResolveSlot1Tower(towerName, stateRes.state.towers)
-                    if not resolved then
-                        SetStatus("Slot 1: " .. tostring(resolveError))
-                        task.wait(5)
-                        return
-                    end
-                    towerName = resolved
-                    local towerState = stateRes.state.towers and stateRes.state.towers[towerName] or {}
-                    local run = towerState.run
-                    
-                    if run then
-                        SetStatus(string.format("Multi [Slot 1]: Resuming %s Tower...", towerName))
-                        local resumeRes = RemoteTowerAction:InvokeServer("Resume", towerName)
-                        if resumeRes and resumeRes.ok then EnsureAutoBattle()
-                        else SetStatus("Slot 1: " .. tostring(resumeRes and resumeRes.reason or "Resume failed")) end
-                        task.wait(2)
-                    elseif Settings.MultiSlot1Restart then
-                        SetStatus(string.format("Multi [Slot 1]: Starting %s Tower...", towerName))
-                        local startRes = RemoteTowerAction:InvokeServer("Start", towerName)
-                        if startRes and startRes.ok then
-                            EnsureAutoBattle()
-                            task.wait(2)
-                        else
-                            SetStatus("Slot 1: " .. tostring(startRes and startRes.reason or "Start failed"))
-                            task.wait(2.5)
-                        end
-                    end
-                else
-                    task.wait(2)
+                local waitSec = RunTowerSlotStep(
+                    "Slot 1",
+                    Settings.MultiSlot1Tower,
+                    Settings.MultiSlot1Team,
+                    Settings.MultiSlot1Restart,
+                    nil,
+                    Slot1SetStatus
+                )
+                if waitSec > 0.8 then
+                    task.wait(waitSec - 0.8)
                 end
             else
-                EnsureAutoBattle()
+                Slot1Status = "Disabled"
             end
-        end
         end)
+        if not ok then
+            Slot1Status = "Error: " .. tostring(err)
+        end
     end
 end)
 
@@ -807,238 +1131,304 @@ task.spawn(function()
         task.wait(0.8)
         local slotOk, slotError = pcall(function()
             if Settings.MultiBattleSystem and Settings.MultiSlot2Enabled then
-            if not SyncSmartAutoRepeat() then
-                SmartSetStatus("Waiting to configure Rift auto-repeat")
-                return
-            end
-            if not IsRotatorBattleActive() then
-                local now = GetSafeTime()
-                local riftStatus = SafeRiftStatus(now)
-                local riftInside = LocalPlayer:GetAttribute("RiftInside") == true
-                local riftAvailable = (riftStatus.joinable or riftInside) and Settings.MultiSlot2RiftEnabled
-                local state = GetSafeState()
+                if not SyncSmartAutoRepeat() then
+                    SmartSetStatus("Waiting to configure Rift auto-repeat")
+                    return
+                end
+                if not IsRotatorBattleActive() then
+                    local now = GetSafeTime()
+                    local riftStatus = SafeRiftStatus(now)
+                    local riftInside = LocalPlayer:GetAttribute("RiftInside") == true
+                    local slot3OwnsRifts = Settings.MultiSlot3Enabled and Settings.MultiSlot3Mode == "Rifts (Dedicated)"
+                    local riftAvailable = (not slot3OwnsRifts) and (riftStatus.joinable or riftInside) and Settings.MultiSlot2RiftEnabled
+                    local state = GetSafeState()
 
-                -- =================================================================
-                -- ⭐ MODE A: CUSTOM PIPELINE
-                -- Ruffy Secret (on CD) -> Toy Kingdom 1..4 (Nightmare) -> Purple Town Boss (Nightmare) -> Rifts
-                -- =================================================================
-                if Settings.MultiSlot2SmartCycle then
-                    RunSmartSlot2(state, now, riftInside, riftAvailable)
-                elseif Settings.MultiSlot2StoryMode == "Custom Pipeline" then
-                    -- 1. TOP PRIORITY: Secret Boss Ruffy 4 (toy_kingdom_secret)
-                    local ruffyCd = SafeStoryCooldown(state.StoryCooldowns, "toy_kingdom_secret", now)
-                    if ruffyCd <= 0 and Settings.StorySecretBoss and StoryTargetReady("toy_kingdom_secret") then
-                        SwitchTeam(Settings.StoryTeam)
-                        SetStatus("Multi [Slot 2]: 👑 Secret Boss Ruffy 4 [Secret]!")
-                        local res = TryStoryFight("toy_kingdom_secret", "Secret")
-                        if res and res.ok then
-                            EnsureAutoBattle()
+                    -- =================================================================
+                    -- ⭐ MODE A: CUSTOM PIPELINE
+                    -- Secret Bosses -> Clover Capital (Nightmare) -> Toy Kingdom (Nightmare) -> Purple Town Boss (Nightmare) -> Rifts
+                    -- =================================================================
+                    if Settings.MultiSlot2SmartCycle then
+                        RunSmartSlot2(state, now, riftInside, riftAvailable)
+                    elseif Settings.MultiSlot2StoryMode == "Custom Pipeline" then
+                        -- 1. TOP PRIORITY: Secret Bosses (Clover Throne Room -> Ruffy 4)
+                        local secId, secDiff, secName = GetReadySecretBoss(state, now)
+                        if secId then
+                            local res = nil
+                            WithActionLock(function()
+                                SwitchTeam(Settings.StoryTeam)
+                                SetStatus("Multi [Slot 2]: 👑 " .. secName .. " [" .. secDiff .. "]!")
+                                res = TryStoryFight(secId, secDiff)
+                            end)
+                            if res and res.ok then
+                                EnsureAutoBattle()
+                            end
                             task.wait(2.5)
                         else
-                            task.wait(2.5)
+                            -- 2. PIPELINE: Clover Capital -> Toy Kingdom -> Purple Town Boss
+                            while CustomPipelineIndex <= #CustomPipelineStages
+                                and Settings.StorySelectedStages[CustomPipelineStages[CustomPipelineIndex].Id] == false do
+                                CustomPipelineIndex = CustomPipelineIndex + 1
+                            end
+
+                            if CustomPipelineIndex > #CustomPipelineStages then
+                                if riftAvailable then
+                                    local _, delaySec = RunRiftSlotStep({
+                                        riftInside = riftInside,
+                                        team = Settings.MultiSlot2RiftTeam,
+                                        useProgress = Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)",
+                                        specificBoss = Settings.MultiSlot2RiftBoss,
+                                        repeatBoss = Settings.MultiSlot2RiftRepeatBoss,
+                                        autoRepeat = Settings.MultiSlot2RiftAutoRepeat,
+                                        setStatus = function(msg) SetStatus("Multi [Slot 2]: " .. msg) end,
+                                    })
+                                    task.wait(delaySec)
+                                else
+                                    CustomPipelineIndex = 1
+                                end
+                            else
+                                local curStep = CustomPipelineStages[CustomPipelineIndex]
+                                local cd = SafeStoryCooldown(state.StoryCooldowns, curStep.Id, now)
+
+                                if cd > 0 then
+                                    if riftAvailable and curStep.Id:match("_boss$") then
+                                        local _, delaySec = RunRiftSlotStep({
+                                            riftInside = riftInside,
+                                            team = Settings.MultiSlot2RiftTeam,
+                                            useProgress = Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)",
+                                            specificBoss = Settings.MultiSlot2RiftBoss,
+                                            repeatBoss = Settings.MultiSlot2RiftRepeatBoss,
+                                            autoRepeat = nil,
+                                            setStatus = function(msg) SetStatus("Multi [Slot 2]: " .. msg) end,
+                                        })
+                                        task.wait(delaySec)
+                                    else
+                                        SetStatus(string.format("Multi [Slot 2]: %s on CD (%ds)...", curStep.Name, math.ceil(cd)))
+                                        if cd > 60 then
+                                            CustomPipelineIndex = CustomPipelineIndex + 1
+                                        else
+                                            task.wait(1.5)
+                                        end
+                                    end
+                                else
+                                    local sRes = nil
+                                    WithActionLock(function()
+                                        SwitchTeam(Settings.StoryTeam)
+                                        SetStatus(string.format("Multi [Slot 2]: Step %d/%d -> %s [%s]...", CustomPipelineIndex, #CustomPipelineStages, curStep.Name, curStep.Diff))
+                                        sRes = TryStoryFight(curStep.Id, curStep.Diff)
+                                    end)
+                                    CustomPipelineIndex = CustomPipelineIndex + 1
+                                    if sRes and sRes.ok then EnsureAutoBattle() end
+                                    task.wait(2.5)
+                                end
+                            end
                         end
                     else
-                        -- 2. PIPELINE: Toy Kingdom 1..4 -> Purple Town Boss
-                        if CustomPipelineIndex > #CustomPipelineStages then
-                            -- Stages 1..5 finished! Now it's time for RIFTS!
-                            if riftAvailable then
-                                if not riftInside then
-                                    SetStatus("Multi [Slot 2]: Pipeline Done -> Entering Rift...")
-                                    RemoteRiftAction:InvokeServer("Enter")
-                                    task.wait(2)
-                                else
-                                    -- Inside Rift: Fight Boss 1..5
-                                    local targetRiftBoss = Settings.MultiSlot2RiftBoss
-                                    if Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)" then
-                                        local rState = RemoteRiftAction:InvokeServer("State")
-                                        if rState and rState.ok and typeof(rState.beaten) == "table" then
-                                            local foundUnbeaten = nil
-                                            for bIdx = 1, #RiftBosses do
-                                                if not rState.beaten[bIdx] then
-                                                    foundUnbeaten = bIdx
-                                                    break
-                                                end
-                                            end
-                                            if foundUnbeaten then
-                                                targetRiftBoss = foundUnbeaten
-                                            else
-                                                -- All cleared: repeat the boss selected in the menu.
-                                                targetRiftBoss = Settings.MultiSlot2RiftRepeatBoss
-                                            end
-                                        end
-                                    end
+                        -- =================================================================
+                        -- MODE B: STANDARD FLEXIBLE ROTATOR
+                        -- =================================================================
+                        local targetStage, targetDiff, friendlyName = GetNextStoryTarget(Settings.SelectedWorld, Settings.SelectedDifficulty)
+                        local stageCd = SafeStoryCooldown(state.StoryCooldowns, targetStage, now)
 
-                                    if targetRiftBoss then
-                                        SwitchTeam(Settings.MultiSlot2RiftTeam)
-                                        local bName = RiftBosses[targetRiftBoss] and RiftBosses[targetRiftBoss].Name or tostring(targetRiftBoss)
-                                        SetStatus(string.format("Multi [Slot 2]: Rifts vs %s...", bName))
-                                        pcall(function()
-                                            SettingsController:Set("AutoRift", Settings.MultiSlot2RiftAutoRepeat)
-                                        end)
-                                        local fightRes = RemoteRiftAction:InvokeServer("Fight", targetRiftBoss)
-                                        if fightRes and fightRes.ok then
-                                            EnsureAutoBattle()
-                                            task.wait(2.5)
-                                        else
-                                            task.wait(3)
-                                        end
-                                    end
-                                end
-                            else
-                                -- Rift closed/done: Reset pipeline back to Step 1!
-                                CustomPipelineIndex = 1
-                            end
+                        local maxQuota = math.huge
+                        if Settings.MultiSlot2StoryMode == "Quota 5 Battles" then maxQuota = 5
+                        elseif Settings.MultiSlot2StoryMode == "Quota 10 Battles" then maxQuota = 10 end
+                        local storyQuotaReached = (MultiSlot2QuotaDone >= maxQuota)
+
+                        local shouldDoRift = false
+                        local shouldDoStory = false
+
+                        if Settings.MultiSlot2Strategy == "Rifts (When Open) -> Story" then
+                            if riftAvailable then shouldDoRift = true else shouldDoStory = true end
                         else
-                            -- Currently at Step CustomPipelineIndex (1..5)
-                            local curStep = CustomPipelineStages[CustomPipelineIndex]
-                            local cd = SafeStoryCooldown(state.StoryCooldowns, curStep.Id, now)
-
-                            if cd > 0 then
-                                -- Boss on cooldown: if Rift is available, do Rift while waiting!
-                                if riftAvailable and curStep.Id:match("_boss$") then
-                                    if not riftInside then
-                                        SetStatus(string.format("Multi [Slot 2]: %s on CD -> Entering Rift...", curStep.Name))
-                                        RemoteRiftAction:InvokeServer("Enter")
-                                        task.wait(2)
-                                    else
-                                        local targetRiftBoss = Settings.MultiSlot2RiftBoss
-                                        if Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)" then
-                                            local rState = RemoteRiftAction:InvokeServer("State")
-                                            if rState and rState.ok and typeof(rState.beaten) == "table" then
-                                                local foundUnbeaten = nil
-                                                for bIdx = 1, #RiftBosses do
-                                                    if not rState.beaten[bIdx] then
-                                                        foundUnbeaten = bIdx
-                                                        break
-                                                    end
-                                                end
-                                                targetRiftBoss = foundUnbeaten or Settings.MultiSlot2RiftRepeatBoss
-                                            end
-                                        end
-                                        SwitchTeam(Settings.MultiSlot2RiftTeam)
-                                        local bName = RiftBosses[targetRiftBoss] and RiftBosses[targetRiftBoss].Name or tostring(targetRiftBoss)
-                                        SetStatus(string.format("Multi [Slot 2]: Rifts vs %s...", bName))
-                                        local fightRes = RemoteRiftAction:InvokeServer("Fight", targetRiftBoss)
-                                        if fightRes and fightRes.ok then
-                                            EnsureAutoBattle()
-                                            task.wait(2.5)
-                                        else
-                                            task.wait(3)
-                                        end
-                                    end
-                                else
-                                    SetStatus(string.format("Multi [Slot 2]: %s on CD (%ds)...", curStep.Name, math.ceil(cd)))
-                                    if cd > 60 then
-                                        CustomPipelineIndex = CustomPipelineIndex + 1
-                                    else
-                                        task.wait(1.5)
-                                    end
-                                end
+                            if Settings.MultiSlot2StoryMode == "Cycle Mobs + Secret Boss" then
+                                if targetStage:match("_secret$") then shouldDoStory = true
+                                elseif stageCd <= 0 then shouldDoStory = true
+                                elseif riftAvailable then shouldDoRift = true
+                                else shouldDoStory = true end
+                            elseif Settings.MultiSlot2StoryMode == "Boss CD Loop" then
+                                if stageCd <= 0 then shouldDoStory = true
+                                elseif riftAvailable then shouldDoRift = true
+                                else shouldDoStory = true end
                             else
-                                -- Ready to fight Step!
-                                SwitchTeam(Settings.StoryTeam)
-                                SetStatus(string.format("Multi [Slot 2]: Step %d/5 -> %s [%s]...", CustomPipelineIndex, curStep.Name, curStep.Diff))
-                                local sRes = TryStoryFight(curStep.Id, curStep.Diff)
-                                CustomPipelineIndex = CustomPipelineIndex + 1
-                                if sRes and sRes.ok then EnsureAutoBattle() end
-                                task.wait(2.5)
+                                if not storyQuotaReached then shouldDoStory = true
+                                elseif riftAvailable then shouldDoRift = true
+                                else MultiSlot2QuotaDone = 0; shouldDoStory = true end
+                            end
+                        end
+
+                        if shouldDoRift and riftAvailable then
+                            local _, delaySec = RunRiftSlotStep({
+                                riftInside = riftInside,
+                                team = Settings.MultiSlot2RiftTeam,
+                                useProgress = Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)",
+                                specificBoss = Settings.MultiSlot2RiftBoss,
+                                repeatBoss = Settings.MultiSlot2RiftRepeatBoss,
+                                autoRepeat = Settings.MultiSlot2RiftAutoRepeat,
+                                setStatus = function(msg) SetStatus("Multi [Slot 2]: " .. msg) end,
+                            })
+                            task.wait(delaySec)
+                        elseif shouldDoStory then
+                            if stageCd > 0 and not targetStage:match("_secret$") and not riftAvailable then
+                                SetStatus(string.format("Multi [Slot 2]: CD %ds (%s)", math.ceil(stageCd), friendlyName))
+                                task.wait(1)
+                            else
+                                local sRes = nil
+                                WithActionLock(function()
+                                    SwitchTeam(Settings.StoryTeam)
+                                    SetStatus(string.format("Multi [Slot 2]: %s [%s]...", friendlyName, targetDiff))
+                                    sRes = TryStoryFight(targetStage, targetDiff)
+                                end)
+                                if sRes and sRes.ok then
+                                    MultiSlot2QuotaDone = MultiSlot2QuotaDone + 1
+                                    EnsureAutoBattle()
+                                    task.wait(2.5)
+                                else
+                                    task.wait(2.5)
+                                end
                             end
                         end
                     end
                 else
-                    -- =================================================================
-                    -- MODE B: STANDARD FLEXIBLE ROTATOR
-                    -- =================================================================
-                    local targetStage, targetDiff, friendlyName = GetNextStoryTarget(Settings.SelectedWorld, Settings.SelectedDifficulty)
-                    local stageCd = SafeStoryCooldown(state.StoryCooldowns, targetStage, now)
-
-                    local maxQuota = math.huge
-                    if Settings.MultiSlot2StoryMode == "Quota 5 Battles" then maxQuota = 5
-                    elseif Settings.MultiSlot2StoryMode == "Quota 10 Battles" then maxQuota = 10 end
-                    local storyQuotaReached = (MultiSlot2QuotaDone >= maxQuota)
-
-                    local shouldDoRift = false
-                    local shouldDoStory = false
-
-                    if Settings.MultiSlot2Strategy == "Rifts (When Open) -> Story" then
-                        if riftAvailable then shouldDoRift = true else shouldDoStory = true end
-                    else
-                        if Settings.MultiSlot2StoryMode == "Cycle Mobs + Secret Boss" then
-                            if targetStage:match("_secret$") then shouldDoStory = true
-                            elseif stageCd <= 0 then shouldDoStory = true
-                            elseif riftAvailable then shouldDoRift = true
-                            else shouldDoStory = true end
-                        elseif Settings.MultiSlot2StoryMode == "Boss CD Loop" then
-                            if stageCd <= 0 then shouldDoStory = true
-                            elseif riftAvailable then shouldDoRift = true
-                            else shouldDoStory = true end
-                        else
-                            if not storyQuotaReached then shouldDoStory = true
-                            elseif riftAvailable then shouldDoRift = true
-                            else MultiSlot2QuotaDone = 0; shouldDoStory = true end
-                        end
-                    end
-
-                    if shouldDoRift and riftAvailable then
-                        if not riftInside then
-                            SetStatus("Multi [Slot 2]: Entering Rift Portal...")
-                            RemoteRiftAction:InvokeServer("Enter")
-                            task.wait(2)
-                        else
-                            local targetRiftBoss = Settings.MultiSlot2RiftBoss
-                            if Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)" then
-                                local rState = RemoteRiftAction:InvokeServer("State")
-                                if rState and rState.ok and typeof(rState.beaten) == "table" then
-                                    targetRiftBoss = Settings.MultiSlot2RiftRepeatBoss
-                                    for bIdx = 1, #RiftBosses do
-                                        if not rState.beaten[bIdx] then
-                                            targetRiftBoss = bIdx
-                                            break
-                                        end
-                                    end
-                                end
-                            end
-
-                            SwitchTeam(Settings.MultiSlot2RiftTeam)
-                            local bName = RiftBosses[targetRiftBoss] and RiftBosses[targetRiftBoss].Name or tostring(targetRiftBoss)
-                            SetStatus(string.format("Multi [Slot 2]: Rifts vs %s...", bName))
-                            pcall(function()
-                                SettingsController:Set("AutoRift", Settings.MultiSlot2RiftAutoRepeat)
-                            end)
-                            local fightRes = RemoteRiftAction:InvokeServer("Fight", targetRiftBoss)
-                            if fightRes and fightRes.ok then
-                                EnsureAutoBattle()
-                                task.wait(2.5)
-                            else
-                                task.wait(3)
-                            end
-                        end
-                    elseif shouldDoStory then
-                        if stageCd > 0 and not targetStage:match("_secret$") and not riftAvailable then
-                            SetStatus(string.format("Multi [Slot 2]: CD %ds (%s)", math.ceil(stageCd), friendlyName))
-                            task.wait(1)
-                        else
-                            SwitchTeam(Settings.StoryTeam)
-                            SetStatus(string.format("Multi [Slot 2]: %s [%s]...", friendlyName, targetDiff))
-                            local sRes = TryStoryFight(targetStage, targetDiff)
-                            if sRes and sRes.ok then
-                                MultiSlot2QuotaDone = MultiSlot2QuotaDone + 1
-                                EnsureAutoBattle()
-                                task.wait(2.5)
-                            else
-                                task.wait(2.5)
-                            end
-                        end
-                    end
+                    EnsureAutoBattle()
                 end
-            else
-                EnsureAutoBattle()
             end
-        end
         end)
         if not slotOk then
             LastStoryFailure = tostring(slotError)
             SetStatus("Slot 2 error: " .. LastStoryFailure)
+        end
+    end
+end)
+
+-- SLOT 3: Third Battle Seal Loop (2nd Tower / Dedicated Rifts / Auto Dungeon / Raids & World Boss)
+local Slot3NextDungeonAttempt = 0
+local Slot3NextRaidAttempt = 0
+task.spawn(function()
+    while true do
+        task.wait(0.8)
+        local ok, err = pcall(function()
+            if not (Settings.MultiBattleSystem and Settings.MultiSlot3Enabled) then
+                Slot3Status = "Disabled"
+                return
+            end
+
+            local mode = Settings.MultiSlot3Mode
+            if mode == "2nd Tower" then
+                local conflictTower = nil
+                if Settings.MultiSlot1Enabled then
+                    conflictTower = GetCachedTowerId(Settings.MultiSlot1Tower) or Settings.MultiSlot1Tower
+                end
+                local waitSec = RunTowerSlotStep(
+                    "Slot 3",
+                    Settings.MultiSlot3Tower,
+                    Settings.MultiSlot3Team,
+                    Settings.MultiSlot3Restart,
+                    conflictTower,
+                    Slot3SetStatus
+                )
+                if waitSec > 0.8 then
+                    task.wait(waitSec - 0.8)
+                end
+            elseif mode == "Rifts (Dedicated)" then
+                if IsRiftBattleActive() then
+                    Slot3Status = "In Rift battle"
+                    EnsureAutoBattle()
+                    return
+                end
+                local now = GetSafeTime()
+                local riftStatus = SafeRiftStatus(now)
+                local riftInside = LocalPlayer:GetAttribute("RiftInside") == true
+                if riftStatus.joinable or riftInside then
+                    local _, delaySec = RunRiftSlotStep({
+                        riftInside = riftInside,
+                        team = Settings.MultiSlot3Team,
+                        useProgress = Settings.MultiSlot2RiftMode == "Auto Progress (1 -> 5)",
+                        specificBoss = Settings.MultiSlot2RiftBoss,
+                        repeatBoss = Settings.MultiSlot2RiftRepeatBoss,
+                        autoRepeat = Settings.MultiSlot2RiftAutoRepeat,
+                        setStatus = Slot3SetStatus,
+                    })
+                    if delaySec > 0.8 then
+                        task.wait(delaySec - 0.8)
+                    end
+                else
+                    local waitSec = math.max(0, (riftStatus.nextOpenAt or (now + 5)) - now)
+                    Slot3Status = "Rift closed (" .. SafeClock(waitSec) .. ")"
+                end
+            elseif mode == "Auto Dungeon" then
+                pcall(function()
+                    if SettingsController:Get("AutoDungeon") ~= true then
+                        SettingsController:Set("AutoDungeon", true)
+                    end
+                end)
+                if IsModeBattleActive("dungeon") then
+                    Slot3Status = "In Dungeon battle"
+                    EnsureAutoBattle()
+                    return
+                end
+                if not RemoteDungeonAction then
+                    Slot3SetStatus("DungeonAction remote unavailable")
+                    task.wait(5)
+                    return
+                end
+                if os.clock() >= Slot3NextDungeonAttempt then
+                    local autoRes = nil
+                    WithActionLock(function()
+                        autoRes = RemoteDungeonAction:InvokeServer("Auto", true)
+                    end)
+                    if autoRes and autoRes.ok then
+                        Slot3SetStatus("Auto Dungeon active")
+                        Slot3NextDungeonAttempt = os.clock() + 8
+                    else
+                        Slot3SetStatus("Dungeon: " .. tostring(autoRes and autoRes.reason or "Waiting for Auto Dungeon"))
+                        Slot3NextDungeonAttempt = os.clock() + 10
+                    end
+                end
+            else
+                local raidInfo = Slot3RaidMap[mode]
+                if not raidInfo then
+                    Slot3Status = "Unknown mode"
+                    return
+                end
+                if IsModeBattleActive(raidInfo.mode) then
+                    Slot3Status = "In " .. mode
+                    EnsureAutoBattle()
+                    return
+                end
+                if not RemoteRaidFight then
+                    Slot3SetStatus("RaidFight remote unavailable")
+                    task.wait(5)
+                    return
+                end
+                if os.clock() >= Slot3NextRaidAttempt then
+                    local fightRes = nil
+                    local lockOk, lockErr = WithActionLock(function()
+                        pcall(function()
+                            RemoteRaidFight:InvokeServer("SetDeck", Settings.MultiSlot3Team, raidInfo.id)
+                        end)
+                        SwitchTeam(Settings.MultiSlot3Team)
+                        Slot3SetStatus("Starting " .. mode .. "...")
+                        fightRes = RemoteRaidFight:InvokeServer("Fight", raidInfo.id)
+                    end)
+                    if not lockOk then
+                        Slot3SetStatus("Raid lock error: " .. tostring(lockErr))
+                        Slot3NextRaidAttempt = os.clock() + 3
+                        return
+                    end
+                    if fightRes and fightRes.ok then
+                        Slot3SetStatus("Fighting " .. mode)
+                        EnsureAutoBattle()
+                        Slot3NextRaidAttempt = os.clock() + 3
+                    else
+                        local reason = tostring(fightRes and fightRes.reason or "Not ready")
+                        Slot3SetStatus(mode .. ": " .. reason)
+                        Slot3NextRaidAttempt = os.clock() + 8
+                    end
+                end
+            end
+        end)
+        if not ok then
+            Slot3Status = "Error: " .. tostring(err)
         end
     end
 end)
@@ -1402,7 +1792,7 @@ TopBarCorner.CornerRadius = UDim.new(0, 10)
 TopBarCorner.Parent = TopBar
 
 local Title = Instance.new("TextLabel")
-Title.Text = "⚡ ACB Auto Farm [Multi-Battle Edition]"
+Title.Text = "⚡ ACB Auto Farm [UPD 4 | 3-Slot Edition]"
 Title.Font = Enum.Font.GothamBold
 Title.TextSize = 13
 Title.TextColor3 = Color3.fromRGB(255, 215, 80)
@@ -1500,7 +1890,8 @@ local function CreatePage(canvasH)
     f.ScrollBarThickness = 4
     f.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 100)
     f.BorderSizePixel = 0
-    f.CanvasSize = UDim2.new(0, 0, 0, canvasH or 450)
+    f.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    f.CanvasSize = UDim2.new(0, 0, 0, 0)
     f.Visible = false
     f.Parent = Pages
     
@@ -1512,8 +1903,6 @@ local function CreatePage(canvasH)
 end
 
 local MultiPage = CreatePage(880)
-MultiPage.AutomaticCanvasSize = Enum.AutomaticSize.Y
-MultiPage.CanvasSize = UDim2.new(0, 0, 0, 0)
 local StoryPage = CreatePage(820)
 local TowerPage = CreatePage(400)
 local RiftPage = CreatePage(560)
@@ -1646,17 +2035,17 @@ local function CreateSectionHeader(parent, text, color)
 end
 
 -- =====================================================================
--- 1. TAB: ⚡ MULTI-BATTLE DUAL SYSTEM PAGE
+-- 1. TAB: ⚡ MULTI-BATTLE 3-SLOT SYSTEM PAGE
 -- =====================================================================
 
-CreateToggle(MultiPage, "⚡ ENABLE MULTIBATTLE DUAL SYSTEM", Settings.MultiBattleSystem, function(val)
+CreateToggle(MultiPage, "⚡ ENABLE MULTIBATTLE (3-SLOT SYSTEM)", Settings.MultiBattleSystem, function(val)
     Settings.MultiBattleSystem = val
     if val then
         Settings.StoryFarmEnabled = false
         Settings.TowerFarmEnabled = false
         Settings.EndgameFarmEnabled = false
         Settings.RiftFarmEnabled = false
-        SetStatus("Multi-Battle Dual Engine Activated! ⚡")
+        SetStatus("Multi-Battle 3-Slot Engine Activated! ⚡")
     else
         SetStatus("Multi-Battle Deactivated")
     end
@@ -1664,7 +2053,7 @@ end)
 
 -- Live Multi-Battle Monitor
 local DualMonitor = Instance.new("Frame")
-DualMonitor.Size = UDim2.new(1, 0, 0, 115)
+DualMonitor.Size = UDim2.new(1, 0, 0, 158)
 DualMonitor.BackgroundColor3 = Color3.fromRGB(26, 30, 42)
 DualMonitor.Parent = MultiPage
 local dmc = Instance.new("UICorner")
@@ -1676,7 +2065,7 @@ dmcStroke.Thickness = 1
 dmcStroke.Parent = DualMonitor
 
 local DmTitle = Instance.new("TextLabel")
-DmTitle.Text = "⚡ Live Multi-Battle Concurrent Status"
+DmTitle.Text = "⚡ Live Multi-Battle Concurrent Status (3 Slots)"
 DmTitle.Font = Enum.Font.GothamBold
 DmTitle.TextSize = 12
 DmTitle.TextColor3 = Color3.fromRGB(255, 215, 80)
@@ -1702,11 +2091,23 @@ DmSlot2.Text = "Slot 2 [Rotator]: Checking..."
 DmSlot2.Font = Enum.Font.GothamMedium
 DmSlot2.TextSize = 11
 DmSlot2.TextColor3 = Color3.fromRGB(130, 230, 160)
-DmSlot2.Size = UDim2.new(1, -20, 0, 18)
-DmSlot2.Position = UDim2.new(0, 10, 0, 48)
+DmSlot2.Size = UDim2.new(1, -20, 0, 28)
+DmSlot2.Position = UDim2.new(0, 10, 0, 46)
 DmSlot2.TextXAlignment = Enum.TextXAlignment.Left
+DmSlot2.TextWrapped = true
 DmSlot2.BackgroundTransparency = 1
 DmSlot2.Parent = DualMonitor
+
+local DmSlot3 = Instance.new("TextLabel")
+DmSlot3.Text = "Slot 3 [Seal]: Checking..."
+DmSlot3.Font = Enum.Font.GothamMedium
+DmSlot3.TextSize = 11
+DmSlot3.TextColor3 = Color3.fromRGB(255, 195, 110)
+DmSlot3.Size = UDim2.new(1, -20, 0, 18)
+DmSlot3.Position = UDim2.new(0, 10, 0, 76)
+DmSlot3.TextXAlignment = Enum.TextXAlignment.Left
+DmSlot3.BackgroundTransparency = 1
+DmSlot3.Parent = DualMonitor
 
 local DmRift = Instance.new("TextLabel")
 DmRift.Text = "Rift Portal: Checking..."
@@ -1714,52 +2115,78 @@ DmRift.Font = Enum.Font.GothamMedium
 DmRift.TextSize = 11
 DmRift.TextColor3 = Color3.fromRGB(70, 225, 185)
 DmRift.Size = UDim2.new(1, -20, 0, 18)
-DmRift.Position = UDim2.new(0, 10, 0, 70)
+DmRift.Position = UDim2.new(0, 10, 0, 98)
 DmRift.TextXAlignment = Enum.TextXAlignment.Left
 DmRift.BackgroundTransparency = 1
 DmRift.Parent = DualMonitor
 
 local DmSecret = Instance.new("TextLabel")
-DmSecret.Text = "Secret Boss: Checking..."
+DmSecret.Text = "Secret Bosses: Checking..."
 DmSecret.Font = Enum.Font.GothamMedium
 DmSecret.TextSize = 11
 DmSecret.TextColor3 = Color3.fromRGB(255, 150, 180)
-DmSecret.Size = UDim2.new(1, -20, 0, 18)
-DmSecret.Position = UDim2.new(0, 10, 0, 92)
+DmSecret.Size = UDim2.new(1, -20, 0, 32)
+DmSecret.Position = UDim2.new(0, 10, 0, 120)
 DmSecret.TextXAlignment = Enum.TextXAlignment.Left
+DmSecret.TextWrapped = true
 DmSecret.BackgroundTransparency = 1
 DmSecret.Parent = DualMonitor
 
 local function UpdateDualMonitorUI()
     local ok, err = pcall(function()
-        local towerAct = IsTowerBattleActive()
+        local slot1TowerId = GetCachedTowerId(Settings.MultiSlot1Tower) or Settings.MultiSlot1Tower
+        local towerAct = IsTowerBattleActive(slot1TowerId)
         local rotAct = IsRotatorBattleActive()
         local now = GetSafeTime()
         local s = GetSafeState()
         local status = SafeRiftStatus(now)
 
-        DmSlot1.Text = string.format("Slot 1 [Tower]: %s (%s) [Team %d]", 
-            Settings.MultiSlot1Tower, 
-            towerAct and "IN BATTLE 🟢" or "Searching/Ready ⏳", 
-            Settings.MultiSlot1Team)
+        if not Settings.MultiSlot1Enabled then
+            DmSlot1.Text = "Slot 1 [Tower]: OFF"
+        else
+            DmSlot1.Text = string.format("Slot 1 [Tower]: %s (%s) [Team %d]",
+                Settings.MultiSlot1Tower,
+                towerAct and "IN BATTLE 🟢" or "Searching/Ready ⏳",
+                Settings.MultiSlot1Team)
+        end
 
-        if Settings.MultiSlot2SmartCycle then
+        if not Settings.MultiSlot2Enabled then
+            DmSlot2.Text = "Slot 2 [Rotator]: OFF"
+        elseif Settings.MultiSlot2SmartCycle then
             DmSlot2.Text = "Slot 2 [Auto]: " .. SmartStatus
-            DmSlot2.TextWrapped = true
         elseif Settings.MultiSlot2StoryMode == "Custom Pipeline" then
             local curStageName = (CustomPipelineStages[CustomPipelineIndex] and CustomPipelineStages[CustomPipelineIndex].Name) or "Rifts Mode"
-            local stepTxt = CustomPipelineIndex <= #CustomPipelineStages and string.format("Step %d/5 (%s)", CustomPipelineIndex, curStageName) or "Rifts Mode"
+            local stepTxt = CustomPipelineIndex <= #CustomPipelineStages and string.format("Step %d/%d (%s)", CustomPipelineIndex, #CustomPipelineStages, curStageName) or "Rifts Mode"
             DmSlot2.Text = string.format("Slot 2 [Pipeline]: %s (%s)", stepTxt, rotAct and "IN BATTLE 🟢" or "Ready ⏳")
         else
-            DmSlot2.Text = string.format("Slot 2 [Rotator]: %s (%s) [Done: %d]", 
-                Settings.MultiSlot2StoryMode, 
-                rotAct and "IN BATTLE 🟢" or "Ready ⏳", 
+            DmSlot2.Text = string.format("Slot 2 [Rotator]: %s (%s) [Done: %d]",
+                Settings.MultiSlot2StoryMode,
+                rotAct and "IN BATTLE 🟢" or "Ready ⏳",
                 MultiSlot2QuotaDone)
         end
 
         if LastStoryFailure ~= "" then
             DmSlot2.Text = "Story rejected (retry in up to 60s): " .. LastStoryFailure
-            DmSlot2.TextWrapped = true
+        end
+
+        if not Settings.MultiSlot3Enabled then
+            DmSlot3.Text = "Slot 3 [Seal]: OFF"
+        else
+            local slot3Active = false
+            if Settings.MultiSlot3Mode == "2nd Tower" then
+                local slot3TowerId = GetCachedTowerId(Settings.MultiSlot3Tower) or Settings.MultiSlot3Tower
+                slot3Active = IsTowerBattleActive(slot3TowerId)
+            elseif Settings.MultiSlot3Mode == "Rifts (Dedicated)" then
+                slot3Active = IsRiftBattleActive()
+            elseif Settings.MultiSlot3Mode == "Auto Dungeon" then
+                slot3Active = IsModeBattleActive("dungeon")
+            elseif Slot3RaidMap[Settings.MultiSlot3Mode] then
+                slot3Active = IsModeBattleActive(Slot3RaidMap[Settings.MultiSlot3Mode].mode)
+            end
+            DmSlot3.Text = string.format("Slot 3 [%s]: %s (%s)",
+                Settings.MultiSlot3Mode,
+                Slot3Status,
+                slot3Active and "IN BATTLE 🟢" or "Ready ⏳")
         end
 
         if status.available == false then
@@ -1769,27 +2196,28 @@ local function UpdateDualMonitorUI()
             local left = math.max(0, (status.joinEndsAt or now) - now)
             DmRift.Text = string.format("Rift Portal: OPEN & JOINABLE (%s left) ⚡", SafeClock(left))
         elseif status.open then
-            DmRift.Text = string.format("Rift Portal: OPEN (In Progress) 🟢")
+            DmRift.Text = "Rift Portal: OPEN (In Progress) 🟢"
         else
             local nextIn = math.max(0, (status.nextOpenAt or (now + 600)) - now)
             DmRift.Text = string.format("Rift Portal: Closed (Next open in %s) ⏳", SafeClock(nextIn))
         end
 
-        local cdSec = SafeStoryCooldown(s.StoryCooldowns, "toy_kingdom_secret", now)
-        if cdSec <= 0 then
-            DmSecret.Text = "Secret Boss (Ruffy 4): READY TO FIGHT! 🟢"
-            DmSecret.TextColor3 = Color3.fromRGB(46, 204, 113)
-        else
-            DmSecret.Text = string.format("Secret Boss (Ruffy 4): CD %s ⏳", SafeClock(cdSec))
-            DmSecret.TextColor3 = Color3.fromRGB(255, 150, 180)
-        end
+        local cloverCd = SafeStoryCooldown(s.StoryCooldowns, "clover_capital_secret", now)
+        local toyCd = SafeStoryCooldown(s.StoryCooldowns, "toy_kingdom_secret", now)
+        local cloverTxt = cloverCd <= 0 and "READY 🟢" or ("CD " .. SafeClock(cloverCd))
+        local toyTxt = toyCd <= 0 and "READY 🟢" or ("CD " .. SafeClock(toyCd))
+        DmSecret.Text = string.format("Throne Room (Time Sage): %s\nToy Secret (Ruffy 4): %s", cloverTxt, toyTxt)
+        DmSecret.TextColor3 = (cloverCd <= 0 or toyCd <= 0)
+            and Color3.fromRGB(46, 204, 113)
+            or Color3.fromRGB(255, 150, 180)
     end)
     if not ok then
         DmSlot1.Text = 'Monitor error: ' .. tostring(err)
         DmSlot1.TextWrapped = true
         DmSlot2.Text = 'Status update failed; see error above'
+        DmSlot3.Text = 'Slot 3: status unavailable'
         DmRift.Text = 'Rift Portal: status unavailable'
-        DmSecret.Text = 'Secret Boss: status unavailable'
+        DmSecret.Text = 'Secret Bosses: status unavailable'
     end
 end
 
@@ -1850,7 +2278,7 @@ SmartNote.Font = Enum.Font.GothamMedium
 SmartNote.TextSize = 11
 SmartNote.TextColor3 = Color3.fromRGB(180, 220, 200)
 SmartNote.TextWrapped = true
-SmartNote.Text = "เปิดโหมดนี้: Secret → Story 5 ด่านเดิม → Rift\nเช็ก Story หลังจบไฟต์ / บันทึกค่าอัตโนมัติ\nใช้ทีม Story และ Rift ด้านล่าง\nRotator Strategy / Story Mode / Auto Repeat ใช้เมื่อปิดโหมดนี้"
+SmartNote.Text = "เปิดโหมดนี้: Secret (Throne Room + Ruffy 4) → Clover Capital / Toy Kingdom / Purple Town (Nightmare) → Rift\nเช็ก Story หลังจบไฟต์ / บันทึกค่าอัตโนมัติ\nใช้ทีม Story และ Rift ด้านล่าง\nRotator Strategy / Story Mode / Auto Repeat ใช้เมื่อปิดโหมดนี้"
 SmartNote.Parent = MultiPage
 
 CreateDropdown(MultiPage, "Rotator Strategy", MultiStrategyOptions, Settings.MultiSlot2Strategy, function(val)
@@ -1861,15 +2289,8 @@ CreateDropdown(MultiPage, "Story Mode in Rotator", MultiStoryModeOptions, Settin
     Settings.MultiSlot2StoryMode = val
 end)
 
-CreateDropdown(MultiPage, "Story World in Rotator", {"Toy Kingdom", "Purple Town", "Hollow World", "Android Games", "Purple Forest"}, (WorldMapLookup[Settings.SelectedWorld] and WorldMapLookup[Settings.SelectedWorld].Name) or "Toy Kingdom", function(val)
-    local m = {
-        ["Toy Kingdom"] = "toy_kingdom",
-        ["Purple Town"] = "purple_town",
-        ["Hollow World"] = "hollow_world",
-        ["Android Games"] = "android_games",
-        ["Purple Forest"] = "purple_forest",
-    }
-    Settings.SelectedWorld = m[val] or "toy_kingdom"
+CreateDropdown(MultiPage, "Story World in Rotator", WorldDropdownOptions, (WorldMapLookup[Settings.SelectedWorld] and WorldMapLookup[Settings.SelectedWorld].Name) or "Toy Kingdom", function(val)
+    Settings.SelectedWorld = WorldNameToId[val] or "toy_kingdom"
     Settings.SelectedStage = Settings.SelectedWorld .. "_1"
 end)
 
@@ -1915,6 +2336,29 @@ CreateToggle(MultiPage, "Auto Repeat (เมื่อปิดโหมดอั
     Settings.MultiSlot2RiftAutoRepeat = val
 end)
 
+-- Section: Slot 3 Configuration (Third Battle Seal - UPD 4)
+CreateSectionHeader(MultiPage, "⚡ SLOT 3: Third Battle Seal Setup (UPD 4)", Color3.fromRGB(255, 195, 110))
+
+CreateToggle(MultiPage, "⚡ Enable Slot 3 (3rd Multi-Battle)", Settings.MultiSlot3Enabled, function(val)
+    Settings.MultiSlot3Enabled = val
+end)
+
+CreateDropdown(MultiPage, "Slot 3 Mode", Slot3Modes, Settings.MultiSlot3Mode, function(val)
+    Settings.MultiSlot3Mode = val
+end)
+
+CreateDropdown(MultiPage, "Slot 3 Tower (If 2nd Tower)", Slot1Towers, Settings.MultiSlot3Tower, function(val)
+    Settings.MultiSlot3Tower = val
+end)
+
+CreateDropdown(MultiPage, "Slot 3 Team / Loadout", TeamOptions, "Team " .. Settings.MultiSlot3Team, function(val)
+    Settings.MultiSlot3Team = tonumber(val:match("%d+")) or 3
+end)
+
+CreateToggle(MultiPage, "🔁 Auto Restart Slot 3 Tower", Settings.MultiSlot3Restart, function(val)
+    Settings.MultiSlot3Restart = val
+end)
+
 -- =====================================================================
 -- 2. TAB: 📖 STORY PAGE (Customizable Stage Checkboxes & Nightmare Loop)
 -- =====================================================================
@@ -1937,15 +2381,8 @@ CreateDropdown(StoryPage, "⚔️ Team / Loadout", TeamOptions, "Team " .. Setti
 end)
 
 local defaultWorldName = (WorldMapLookup[Settings.SelectedWorld] and WorldMapLookup[Settings.SelectedWorld].Name) or "Toy Kingdom"
-CreateDropdown(StoryPage, "World / Map", {"Toy Kingdom", "Purple Town", "Hollow World", "Android Games", "Purple Forest"}, defaultWorldName, function(val)
-    local mapMapping = {
-        ["Toy Kingdom"] = "toy_kingdom",
-        ["Purple Town"] = "purple_town",
-        ["Hollow World"] = "hollow_world",
-        ["Android Games"] = "android_games",
-        ["Purple Forest"] = "purple_forest",
-    }
-    Settings.SelectedWorld = mapMapping[val] or "toy_kingdom"
+CreateDropdown(StoryPage, "World / Map", WorldDropdownOptions, defaultWorldName, function(val)
+    Settings.SelectedWorld = WorldNameToId[val] or "toy_kingdom"
     Settings.SelectedStage = Settings.SelectedWorld .. "_1"
 end)
 
@@ -1957,15 +2394,42 @@ CreateDropdown(StoryPage, "Story Sequence Mode", StoryCycleModeOptions, Settings
     Settings.StoryCycleMode = val
 end)
 
--- Secret Boss Toggle (Priority 1 Hour CD)
+-- Secret Boss Toggles (Priority on Cooldown)
 CreateSectionHeader(StoryPage, "👑 Secret Boss Priority (Auto Farm on CD):", Color3.fromRGB(255, 215, 80))
 
-CreateToggle(StoryPage, "🏴‍☠️ Secret Boss: Ruffy 4 (Auto on 1h CD)", Settings.StorySecretBoss, function(val)
+CreateToggle(StoryPage, "👑 Clover Throne Room: Time Sage King (4h CD)", Settings.StoryCloverSecretBoss, function(val)
+    Settings.StoryCloverSecretBoss = val
+end)
+
+CreateToggle(StoryPage, "🏴‍☠️ Toy Kingdom Secret: Ruffy 4 (4h CD)", Settings.StorySecretBoss, function(val)
     Settings.StorySecretBoss = val
 end)
 
--- Toy Kingdom Normal Stages Checkboxes (Choose freely!)
-CreateSectionHeader(StoryPage, "🎪 Toy Kingdom Stages to Farm (Nightmare):", Color3.fromRGB(130, 220, 255))
+-- Clover Capital Stages Checkboxes (Nightmare)
+CreateSectionHeader(StoryPage, "🍀 Clover Capital Stages to Farm (Nightmare):", Color3.fromRGB(130, 235, 160))
+
+CreateToggle(StoryPage, "🪞 Stage 1: Mirror Brother", Settings.StorySelectedStages["clover_capital_1"], function(val)
+    Settings.StorySelectedStages["clover_capital_1"] = val
+end)
+
+CreateToggle(StoryPage, "🌹 Stage 2: Thorn Queen", Settings.StorySelectedStages["clover_capital_2"], function(val)
+    Settings.StorySelectedStages["clover_capital_2"] = val
+end)
+
+CreateToggle(StoryPage, "🔥 Stage 3: Ash Trickster", Settings.StorySelectedStages["clover_capital_3"], function(val)
+    Settings.StorySelectedStages["clover_capital_3"] = val
+end)
+
+CreateToggle(StoryPage, "🦁 Stage 4: Flame Lioness", Settings.StorySelectedStages["clover_capital_4"], function(val)
+    Settings.StorySelectedStages["clover_capital_4"] = val
+end)
+
+CreateToggle(StoryPage, "😈 Boss: Body Devil", Settings.StorySelectedStages["clover_capital_boss"], function(val)
+    Settings.StorySelectedStages["clover_capital_boss"] = val
+end)
+
+-- Toy Kingdom & Purple Town Normal Stages Checkboxes (Choose freely!)
+CreateSectionHeader(StoryPage, "🎪 Toy Kingdom & Purple Town Stages (Nightmare):", Color3.fromRGB(130, 220, 255))
 
 CreateToggle(StoryPage, "🥊 Stage 1: Barrier Pirate", Settings.StorySelectedStages["toy_kingdom_1"], function(val)
     Settings.StorySelectedStages["toy_kingdom_1"] = val
@@ -1983,9 +2447,13 @@ CreateToggle(StoryPage, "👑 Boss: String Man", Settings.StorySelectedStages["t
     Settings.StorySelectedStages["toy_kingdom_boss"] = val
 end)
 
+CreateToggle(StoryPage, "💣 Purple Town Boss: Killer Bomb", Settings.StorySelectedStages["purple_town_boss"], function(val)
+    Settings.StorySelectedStages["purple_town_boss"] = val
+end)
+
 -- Story Cooldown & Target Monitor
 local StoryMonitor = Instance.new("Frame")
-StoryMonitor.Size = UDim2.new(1, 0, 0, 75)
+StoryMonitor.Size = UDim2.new(1, 0, 0, 96)
 StoryMonitor.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
 StoryMonitor.Parent = StoryPage
 local smc = Instance.new("UICorner")
@@ -2014,13 +2482,24 @@ SmTarget.TextXAlignment = Enum.TextXAlignment.Left
 SmTarget.BackgroundTransparency = 1
 SmTarget.Parent = StoryMonitor
 
+local SmCloverSecret = Instance.new("TextLabel")
+SmCloverSecret.Text = "Clover Throne Room: Checking..."
+SmCloverSecret.Font = Enum.Font.GothamMedium
+SmCloverSecret.TextSize = 11
+SmCloverSecret.TextColor3 = Color3.fromRGB(255, 195, 110)
+SmCloverSecret.Size = UDim2.new(1, -20, 0, 18)
+SmCloverSecret.Position = UDim2.new(0, 10, 0, 48)
+SmCloverSecret.TextXAlignment = Enum.TextXAlignment.Left
+SmCloverSecret.BackgroundTransparency = 1
+SmCloverSecret.Parent = StoryMonitor
+
 local SmSecret = Instance.new("TextLabel")
-SmSecret.Text = "Secret Boss: Checking..."
+SmSecret.Text = "Toy Secret Boss: Checking..."
 SmSecret.Font = Enum.Font.GothamMedium
 SmSecret.TextSize = 11
 SmSecret.TextColor3 = Color3.fromRGB(255, 150, 180)
 SmSecret.Size = UDim2.new(1, -20, 0, 18)
-SmSecret.Position = UDim2.new(0, 10, 0, 48)
+SmSecret.Position = UDim2.new(0, 10, 0, 70)
 SmSecret.TextXAlignment = Enum.TextXAlignment.Left
 SmSecret.BackgroundTransparency = 1
 SmSecret.Parent = StoryMonitor
@@ -2031,16 +2510,25 @@ task.spawn(function()
         pcall(function()
             local now = GetSafeTime()
             local s = GetSafeState()
+            local cloverCd = SafeStoryCooldown(s.StoryCooldowns, "clover_capital_secret", now)
             local cdSec = SafeStoryCooldown(s.StoryCooldowns, "toy_kingdom_secret", now)
             
             local stg, diff, name = GetNextStoryTarget(Settings.SelectedWorld, Settings.SelectedDifficulty, true)
             SmTarget.Text = string.format("Next Farm Target: %s [%s]", name, diff)
 
+            if cloverCd <= 0 then
+                SmCloverSecret.Text = "Clover Throne (Time Sage King): READY! 🟢 (Priority #1)"
+                SmCloverSecret.TextColor3 = Color3.fromRGB(46, 204, 113)
+            else
+                SmCloverSecret.Text = string.format("Clover Throne (Time Sage King): CD %s ⏳", SafeClock(cloverCd))
+                SmCloverSecret.TextColor3 = Color3.fromRGB(255, 195, 110)
+            end
+
             if cdSec <= 0 then
-                SmSecret.Text = "Secret Boss (Ruffy 4): READY TO FIGHT! 🟢 (Priority: Next!)"
+                SmSecret.Text = "Toy Secret (Ruffy 4): READY TO FIGHT! 🟢"
                 SmSecret.TextColor3 = Color3.fromRGB(46, 204, 113)
             else
-                SmSecret.Text = string.format("Secret Boss (Ruffy 4): Cooldown %s ⏳", RiftConfig.Clock(cdSec))
+                SmSecret.Text = string.format("Toy Secret (Ruffy 4): Cooldown %s ⏳", SafeClock(cdSec))
                 SmSecret.TextColor3 = Color3.fromRGB(255, 150, 180)
             end
         end)
@@ -2209,7 +2697,7 @@ end)
 CreateSectionHeader(MiscPage, "🚀 Fast Teleport (Worlds & Areas):", Color3.fromRGB(255, 215, 80))
 
 local TpFrame = Instance.new("Frame")
-TpFrame.Size = UDim2.new(1, 0, 0, 80)
+TpFrame.Size = UDim2.new(1, 0, 0, 82)
 TpFrame.BackgroundColor3 = Color3.fromRGB(28, 28, 38)
 TpFrame.Parent = MiscPage
 local tc = Instance.new("UICorner")
@@ -2222,7 +2710,7 @@ local function CreateTpBtn(name, id, xPos, yPos, w)
     btn.Font = Enum.Font.GothamMedium
     btn.TextSize = 10
     btn.Size = UDim2.new(0, w or 66, 0, 24)
-    btn.Position = UDim2.new(0, xPos, 0, yPos or 30)
+    btn.Position = UDim2.new(0, xPos, 0, yPos or 12)
     btn.BackgroundColor3 = Color3.fromRGB(45, 45, 60)
     btn.TextColor3 = Color3.fromRGB(240, 240, 240)
     btn.Parent = TpFrame
@@ -2234,12 +2722,17 @@ local function CreateTpBtn(name, id, xPos, yPos, w)
     end)
 end
 
-CreateTpBtn("Forest", "Purple Forest", 10, 30, 64)
-CreateTpBtn("Android", "Android Games", 80, 30, 64)
-CreateTpBtn("Hollow", "Hollow World", 150, 30, 64)
-CreateTpBtn("Town", "Purple Town", 220, 30, 64)
-CreateTpBtn("Toy", "Toy Kingdom", 290, 30, 64)
-CreateTpBtn("🌀 Rift", "RiftTimer", 360, 30, 64)
+CreateTpBtn("Forest", "Purple Forest", 10, 12, 64)
+CreateTpBtn("Android", "Android Games", 80, 12, 64)
+CreateTpBtn("Hollow", "Hollow World", 150, 12, 64)
+CreateTpBtn("Town", "Purple Town", 220, 12, 64)
+CreateTpBtn("Toy", "Toy Kingdom", 290, 12, 64)
+CreateTpBtn("Clover", "Clover Capital", 360, 12, 64)
+
+CreateTpBtn("👑 Throne", "TimeSageHall", 10, 44, 96)
+CreateTpBtn("🌀 Rift", "RiftTimer", 114, 44, 96)
+CreateTpBtn("🏰 Dungeon", "DungeonPlunder", 218, 44, 96)
+CreateTpBtn("🛡️ Guild", "GuildHall", 322, 44, 102)
 
 -- Config Management Section
 CreateSectionHeader(MiscPage, "💾 Config Management (Auto-Saved on Change):", Color3.fromRGB(150, 220, 150))
@@ -2298,10 +2791,10 @@ end)
 pcall(function()
     local StarterGui = game:GetService("StarterGui")
     StarterGui:SetCore("SendNotification", {
-        Title = "⚡ ACB Story & Secret Boss Engine",
-        Text = "Toy Kingdom Nightmare Mobs + Ruffy 4 Ready!",
+        Title = "⚡ ACB UPD 4 AutoFarm (3-Slot)",
+        Text = "Clover Capital Nightmare + Throne Room + 3 Slots Ready!",
         Duration = 5
     })
 end)
 
-print("[ACB AutoFarm] Story customizable stage loop + Secret Boss engine loaded!")
+print("[ACB AutoFarm] UPD 4 3-Slot + Clover Capital Nightmare + Clover Throne Room engine loaded!")
